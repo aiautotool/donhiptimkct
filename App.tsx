@@ -85,6 +85,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('measure');
   const [route, setRoute] = useState<RouteKey>('main');
   const [selected, setSelected] = useState<Measurement | undefined>();
+  const [pendingResult, setPendingResult] = useState<Measurement | undefined>();
   const [selectedMetric, setSelectedMetric] = useState<MetricKey>('heartRate');
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
   const [update, setUpdate] = useState<PpgUpdatePayload>(initialUpdate);
@@ -100,6 +101,8 @@ export default function App() {
   const measurementsRef = useRef<Measurement[]>([]);
   const selectedMetricRef = useRef<MetricKey>('heartRate');
   const failResetRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const lastGoodUpdateRef = useRef<PpgUpdatePayload | undefined>(undefined);
+  const measurementSavedRef = useRef(false);
 
   useEffect(() => {
     void bootstrap();
@@ -126,15 +129,19 @@ export default function App() {
       }
       if ((event.status === 'warming' || event.status === 'measuring') && event.bpm) {
         setLiveBpm(event.bpm);
+        lastGoodUpdateRef.current = event;
       }
       if (event.status === 'complete' && event.bpm) {
         setFinalBpm(event.bpm);
         setLiveBpm(undefined);
+        lastGoodUpdateRef.current = event;
         void saveMeasurement(event);
       }
       if (event.status === 'failed' || event.status === 'stopped') {
         setLiveBpm(undefined);
-        setFinalBpm(undefined);
+        if (!measurementSavedRef.current) {
+          setFinalBpm(undefined);
+        }
       }
       if (event.status === 'failed') {
         failResetRef.current = setTimeout(() => {
@@ -202,6 +209,9 @@ export default function App() {
     setFinalBpm(undefined);
     setLiveBpm(undefined);
     setPendingNoteId(undefined);
+    setPendingResult(undefined);
+    lastGoodUpdateRef.current = undefined;
+    measurementSavedRef.current = false;
     setNoteText('');
     setActivity('Sau tập');
     setSignalHistory([]);
@@ -227,6 +237,21 @@ export default function App() {
   }
 
   async function stopMeasurement() {
+    const lastGood = lastGoodUpdateRef.current;
+    if (!measurementSavedRef.current && lastGood?.bpm && lastGood.elapsedMs >= 10000 && lastGood.quality >= 0.3) {
+      await HeartRatePpgModule.stopMeasurementAsync();
+      const completed: PpgUpdatePayload = {
+        ...lastGood,
+        status: 'complete',
+        progress: 1,
+        message: 'Đã có kết quả đo.',
+      };
+      setUpdate(completed);
+      setFinalBpm(lastGood.bpm);
+      setLiveBpm(undefined);
+      await saveMeasurement(completed);
+      return;
+    }
     await HeartRatePpgModule.stopMeasurementAsync();
   }
 
@@ -240,17 +265,19 @@ export default function App() {
   }
 
   async function saveMeasurement(event: PpgUpdatePayload) {
+    if (measurementSavedRef.current || !event.bpm) return;
+    measurementSavedRef.current = true;
     const metricKey = selectedMetricRef.current;
     const metric = healthMetrics.find((item) => item.key === metricKey) ?? healthMetrics[0];
-    const derived = deriveHealthValues(event.bpm!, event.quality, event.spo2, event.respiration);
-    const metricValue = valueForMetric(metricKey, event.bpm!, derived);
+    const derived = deriveHealthValues(event.bpm, event.quality, event.spo2, event.respiration);
+    const metricValue = valueForMetric(metricKey, event.bpm, derived);
     const record: Measurement = {
       id: `${Date.now()}`,
       metric: metricKey,
       label: metric.label,
       value: metricValue,
       unit: metric.unit,
-      bpm: event.bpm!,
+      bpm: event.bpm,
       ...derived,
       quality: event.quality,
       durationMs: event.elapsedMs,
@@ -260,6 +287,7 @@ export default function App() {
     setMeasurements(next);
     measurementsRef.current = next;
     setSelected(record);
+    setPendingResult(record);
     setPendingNoteId(record.id);
     setNoteText('');
     setActivity('Sau tập');
@@ -276,6 +304,7 @@ export default function App() {
     setMeasurements(next);
     measurementsRef.current = next;
     setSelected((item) => item?.id === pendingNoteId ? { ...item, activity, note: cleanNote || undefined } : item);
+    setPendingResult((item) => item?.id === pendingNoteId ? { ...item, activity, note: cleanNote || undefined } : item);
     setPendingNoteId(undefined);
     setNoteText('');
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
@@ -286,12 +315,14 @@ export default function App() {
     setUpdate(initialUpdate);
     setFinalBpm(undefined);
     setSignalHistory([]);
+    setPendingResult(undefined);
     setRoute('main');
     setActiveTab('history');
   }
 
   async function measureAgainFromResult() {
     await saveNote();
+    setPendingResult(undefined);
     setRoute('main');
     setActiveTab('measure');
     await startMeasurement();
@@ -304,6 +335,7 @@ export default function App() {
   function closeResult() {
     setNoteText('');
     setPendingNoteId(undefined);
+    setPendingResult(undefined);
     setUpdate(initialUpdate);
     setFinalBpm(undefined);
     setRoute('main');
@@ -338,7 +370,7 @@ export default function App() {
           history={history}
           reminderOn={reminderOn}
           setReminderOn={setReminderOn}
-          pendingResult={selected}
+          pendingResult={pendingResult}
           values={signalHistory}
           noteText={noteText}
           setNoteText={setNoteText}
