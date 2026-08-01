@@ -101,6 +101,7 @@ export default function App() {
   const [reminderOn, setReminderOn] = useState(false);
   const [themeLight, setThemeLight] = useState(true);
   const measurementsRef = useRef<Measurement[]>([]);
+  const selectedMetricRef = useRef<MetricKey>('heartRate');
   const failResetRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
@@ -110,6 +111,10 @@ export default function App() {
   useEffect(() => {
     measurementsRef.current = measurements;
   }, [measurements]);
+
+  useEffect(() => {
+    selectedMetricRef.current = selectedMetric;
+  }, [selectedMetric]);
 
   useEffect(() => {
     const subscription = HeartRatePpgModule.addListener('onPpgUpdate', (event: PpgUpdatePayload) => {
@@ -238,12 +243,17 @@ export default function App() {
   }
 
   async function saveMeasurement(event: PpgUpdatePayload) {
-    const metric = healthMetrics.find((item) => item.key === selectedMetric) ?? healthMetrics[0];
-    const derived = deriveHealthValues(event.bpm!, event.quality);
-    const metricValue = valueForMetric(selectedMetric, event.bpm!, derived);
+    const metricKey = selectedMetricRef.current;
+    if (metricKey === 'spo2' && typeof event.spo2 !== 'number') {
+      setUpdate({ ...initialUpdate, status: 'failed', message: 'Tín hiệu SpO2 chưa đủ tốt. Hãy đặt kín camera và đo lại.' });
+      return;
+    }
+    const metric = healthMetrics.find((item) => item.key === metricKey) ?? healthMetrics[0];
+    const derived = deriveHealthValues(event.bpm!, event.quality, event.spo2);
+    const metricValue = valueForMetric(metricKey, event.bpm!, derived);
     const record: Measurement = {
       id: `${Date.now()}`,
-      metric: selectedMetric,
+      metric: metricKey,
       label: metric.label,
       value: metricValue,
       unit: metric.unit,
@@ -520,6 +530,7 @@ function MeasureScreen({
             <Pressable style={styles.primaryButton} onPress={toggleMeasurement}>
               <Text style={styles.primaryButtonText}>Bắt đầu đo {metric.label.toLowerCase()}</Text>
             </Pressable>
+            {selectedMetric === 'spo2' ? <Text style={styles.spo2Disclaimer}>Estimated SpO2 - For wellness purposes only.</Text> : null}
           </View>
         ) : (
           <>
@@ -536,7 +547,7 @@ function MeasureScreen({
           <Text style={styles.measureBpm}>{failed ? '--' : visibleBpm ? String(visibleBpm).padStart(2, '0') : isMeasuring ? '--' : '00'}</Text>
           <Text style={styles.measureUnit}>{failed ? 'ĐO LẠI' : isMeasuring && !visibleBpm ? `${Math.max(0, 30 - Math.floor(update.elapsedMs / 1000))} giây` : 'BPM'}</Text>
         </Pressable>
-        <Text style={styles.measureHint}>{sub}</Text>
+        <Text style={styles.measureHint}>{selectedMetric === 'spo2' ? 'Estimated SpO2 - For wellness purposes only.' : sub}</Text>
         <Waveform values={values} active={isMeasuring} dark />
         <View style={styles.progressBarWrap}>
           <View style={[styles.progressBar, { width: `${Math.max(0, Math.min(progress, 1)) * 100}%` }]} />
@@ -851,6 +862,7 @@ function ResultScreen({
         <Text style={styles.resultTopDate}>{formatDate(item.createdAt)}</Text>
         <RangeScale bpm={item.bpm} />
         <Text style={styles.resultSummary}>{item.label} / Trạng thái: {statusForMeasurement(item)}</Text>
+        {item.metric === 'spo2' ? <Text style={styles.resultDisclaimer}>Estimated SpO2 - For wellness purposes only.</Text> : null}
         <Text style={styles.resultQuality}>♡ Độ tin cậy: {Math.round(item.quality * 100)}%</Text>
 
         <View style={styles.activityRow}>
@@ -1204,7 +1216,7 @@ function ClipboardArt() {
 
 function makeDemo(id: string, metric: MetricKey, value: number, unit: string, bpm: number, hoursAgo: number): Measurement {
   const definition = healthMetrics.find((item) => item.key === metric) ?? healthMetrics[0];
-  const derived = deriveHealthValues(bpm, 0.95);
+  const derived = deriveHealthValues(bpm, 0.95, metric === 'spo2' ? value : undefined);
   return {
     id,
     metric,
@@ -1222,7 +1234,7 @@ function makeDemo(id: string, metric: MetricKey, value: number, unit: string, bp
 function migrateMeasurement(item: Partial<Measurement> & { bpm: number; id?: string; createdAt?: string }): Measurement {
   const metric = item.metric ?? 'heartRate';
   const definition = healthMetrics.find((metricItem) => metricItem.key === metric) ?? healthMetrics[0];
-  const derived = deriveHealthValues(item.bpm, item.quality ?? 0.9);
+  const derived = deriveHealthValues(item.bpm, item.quality ?? 0.9, item.spO2);
   return {
     id: item.id ?? `${Date.now()}`,
     metric,
@@ -1239,9 +1251,9 @@ function migrateMeasurement(item: Partial<Measurement> & { bpm: number; id?: str
   };
 }
 
-function deriveHealthValues(bpm: number, quality: number) {
+function deriveHealthValues(bpm: number, quality: number, measuredSpO2?: number) {
   const qualityBonus = Math.round(Math.max(0, Math.min(quality, 1)) * 2);
-  const spO2 = Math.max(94, Math.min(99, 99 - Math.max(0, Math.round((bpm - 92) / 18)) - (quality < 0.65 ? 1 : 0)));
+  const spO2 = measuredSpO2;
   const respiration = Math.max(12, Math.min(22, Math.round(12 + bpm / 18)));
   const hrv = Math.max(25, Math.min(86, Math.round(88 - bpm * 0.55 + qualityBonus * 4)));
   const stress = bpm > 100 || hrv < 38 ? 'Cao' : bpm > 86 || hrv < 50 ? 'Trung bình' : 'Thấp';
@@ -1252,7 +1264,7 @@ function deriveHealthValues(bpm: number, quality: number) {
 }
 
 function valueForMetric(metric: MetricKey, bpm: number, derived: ReturnType<typeof deriveHealthValues>) {
-  if (metric === 'spo2') return derived.spO2;
+  if (metric === 'spo2') return derived.spO2 ?? 0;
   if (metric === 'respiration') return derived.respiration;
   if (metric === 'hrv') return derived.hrv;
   if (metric === 'temperature') return derived.temperature;
@@ -1367,6 +1379,13 @@ const styles = StyleSheet.create({
     color: '#222222',
     fontSize: 18,
     marginTop: 20,
+    textAlign: 'center',
+  },
+  resultDisclaimer: {
+    color: '#667085',
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 8,
     textAlign: 'center',
   },
   resultQuality: {
@@ -1610,6 +1629,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 15,
     marginTop: 3,
+  },
+  spo2Disclaimer: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
   },
   measureTitle: {
     color: '#ffffff',

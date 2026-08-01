@@ -5,6 +5,7 @@ export type PpgUpdatePayload = {
   elapsedMs: number;
   progress: number;
   bpm?: number;
+  spo2?: number;
   quality: number;
   signal?: number;
   message?: string;

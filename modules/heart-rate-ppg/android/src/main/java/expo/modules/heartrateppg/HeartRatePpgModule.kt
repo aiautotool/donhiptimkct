@@ -210,7 +210,15 @@ class HeartRatePpgModule : Module() {
     if (elapsed >= durationMs || (elapsed >= 30_000 && qualityScore() >= 0.82)) {
       val result = estimateBpm()
       if (result.first != null && result.second >= 0.38) {
-        send("complete", elapsed, 1.0, bpm = result.first, quality = result.second)
+        val spo2 = estimateSpO2()
+        send(
+          "complete",
+          elapsed,
+          1.0,
+          bpm = result.first,
+          spo2 = spo2.first,
+          quality = max(result.second, (result.second * 0.75 + spo2.second * 0.25).coerceIn(0.0, 1.0))
+        )
         cleanup()
       } else {
         stop("stopped", "Tin hieu chua du tot. Hay giu ngon tay nhe hon va do lai.")
@@ -364,6 +372,40 @@ class HeartRatePpgModule : Module() {
     val result = bpmFromRecentSamples(24.0, true)
     val bpm = result.first ?: return Pair(null, qualityScore() * 0.55)
     return Pair(bpm, (qualityScore() * 0.55 + result.second * 0.45).coerceIn(0.0, 1.0))
+  }
+
+  private fun estimateSpO2(): Pair<Int?, Double> {
+    if (!isFingerDetected() && !(hasSeenFinger && missingFingerFrames < 45)) return Pair(null, 0.0)
+    val lastTime = samples.lastOrNull()?.time ?: return Pair(null, 0.0)
+    val usable = samples.filter { it.time >= max(0.0, lastTime - 24.0) }
+    if (usable.size <= 210) return Pair(null, 0.0)
+
+    val redValues = usable.map { it.red }
+    val blueValues = usable.map { it.blue }
+    val greenValues = usable.map { it.green }
+    val redDc = redValues.average()
+    val blueDc = blueValues.average()
+    val greenDc = greenValues.average()
+    if (redDc <= 90 || blueDc <= 4 || greenDc <= 4) return Pair(null, 0.0)
+
+    val redAc = standardDeviation(preprocessedSignal(redValues, 30.0))
+    val blueAc = standardDeviation(preprocessedSignal(blueValues, 30.0))
+    val greenAc = standardDeviation(preprocessedSignal(greenValues, 30.0))
+    if (redAc <= 0.00008 || blueAc <= 0.00008 || greenAc <= 0.00008) return Pair(null, 0.0)
+
+    val ratioBlue = (redAc / redDc) / max(blueAc / blueDc, 0.000001)
+    val ratioGreen = (redAc / redDc) / max(greenAc / greenDc, 0.000001)
+    val ratio = ratioBlue * 0.65 + ratioGreen * 0.35
+    if (ratio < 0.12 || ratio > 1.15) return Pair(null, 0.0)
+
+    val raw = 104.0 - 17.0 * ratio
+    if (raw < 88 || raw > 100.5) return Pair(null, 0.0)
+    val spo2 = raw.roundToInt().coerceIn(88, 100)
+    val ratioQuality = (1 - abs(ratio - 0.45) / 0.75).coerceIn(0.0, 1.0)
+    val perfusionQuality = ((redDc - 100) / 80).coerceIn(0.0, 1.0)
+    val quality = (ratioQuality * 0.65 + perfusionQuality * 0.35).coerceIn(0.0, 1.0)
+    if (quality < 0.42) return Pair(null, quality)
+    return Pair(spo2, quality)
   }
 
   private fun liveBpmEstimate(): Pair<Int?, Double> {
@@ -600,6 +642,7 @@ class HeartRatePpgModule : Module() {
     elapsedMs: Long,
     progress: Double,
     bpm: Int? = null,
+    spo2: Int? = null,
     quality: Double,
     signal: Double? = null,
     message: String? = null
@@ -611,6 +654,7 @@ class HeartRatePpgModule : Module() {
       "quality" to quality
     )
     bpm?.let { body["bpm"] = it }
+    spo2?.let { body["spo2"] = it }
     signal?.let { body["signal"] = it }
     message?.let { body["message"] = it }
     sendEvent("onPpgUpdate", body)

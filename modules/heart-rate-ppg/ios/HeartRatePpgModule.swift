@@ -224,7 +224,8 @@ public class HeartRatePpgModule: Module {
     if elapsed >= durationSeconds || (elapsed >= 30 && qualityScore() >= 0.82) {
       let result = estimateBpm()
       if let bpm = result.bpm, result.quality >= 0.38 {
-        send(status: "complete", elapsedMs: Int(elapsed * 1000), progress: 1, bpm: bpm, quality: result.quality, message: nil)
+        let spo2 = estimateSpO2()
+        send(status: "complete", elapsedMs: Int(elapsed * 1000), progress: 1, bpm: bpm, spo2: spo2.spo2, quality: min(max(result.quality * 0.75 + spo2.quality * 0.25, result.quality), 1), message: nil)
         cleanup()
       } else {
         stop(status: "stopped", message: "Tin hieu chua du tot. Hay giu ngon tay nhe hon va do lai.")
@@ -348,6 +349,40 @@ public class HeartRatePpgModule: Module {
     let result = bpmFromRecentSamples(seconds: 24, final: true)
     guard let bpm = result.bpm else { return (nil, qualityScore() * 0.55) }
     return (bpm, min(qualityScore() * 0.55 + result.stability * 0.45, 1))
+  }
+
+  private func estimateSpO2() -> (spo2: Int?, quality: Double) {
+    guard isFingerDetected() || (hasSeenFinger && missingFingerFrames < 45) else { return (nil, 0) }
+    let lastTime = samples.last?.time ?? 0
+    let usable = samples.filter { $0.time >= max(0, lastTime - 24) }
+    guard usable.count > 210 else { return (nil, 0) }
+
+    let redValues = usable.map(\.red)
+    let blueValues = usable.map(\.blue)
+    let greenValues = usable.map(\.green)
+    let redDc = redValues.reduce(0, +) / Double(redValues.count)
+    let blueDc = blueValues.reduce(0, +) / Double(blueValues.count)
+    let greenDc = greenValues.reduce(0, +) / Double(greenValues.count)
+    guard redDc > 90, blueDc > 4, greenDc > 4 else { return (nil, 0) }
+
+    let redAc = standardDeviation(preprocessedSignal(values: redValues, sampleRate: 30))
+    let blueAc = standardDeviation(preprocessedSignal(values: blueValues, sampleRate: 30))
+    let greenAc = standardDeviation(preprocessedSignal(values: greenValues, sampleRate: 30))
+    guard redAc > 0.00008, blueAc > 0.00008, greenAc > 0.00008 else { return (nil, 0) }
+
+    let ratioBlue = (redAc / redDc) / max(blueAc / blueDc, 0.000001)
+    let ratioGreen = (redAc / redDc) / max(greenAc / greenDc, 0.000001)
+    let ratio = ratioBlue * 0.65 + ratioGreen * 0.35
+    guard ratio >= 0.12, ratio <= 1.15 else { return (nil, 0) }
+
+    let raw = 104.0 - 17.0 * ratio
+    guard raw >= 88, raw <= 100.5 else { return (nil, 0) }
+    let spo2 = Int(min(max(raw.rounded(), 88), 100))
+    let ratioQuality = min(max(1 - abs(ratio - 0.45) / 0.75, 0), 1)
+    let perfusionQuality = min(max((redDc - 100) / 80, 0), 1)
+    let quality = min(max(ratioQuality * 0.65 + perfusionQuality * 0.35, 0), 1)
+    guard quality >= 0.42 else { return (nil, quality) }
+    return (spo2, quality)
   }
 
   private func liveBpmEstimate() -> (bpm: Int?, quality: Double) {
@@ -573,7 +608,7 @@ public class HeartRatePpgModule: Module {
     return sorted[middle]
   }
 
-  private func send(status: String, elapsedMs: Int, progress: Double, bpm: Int? = nil, quality: Double, signal: Double? = nil, message: String?) {
+  private func send(status: String, elapsedMs: Int, progress: Double, bpm: Int? = nil, spo2: Int? = nil, quality: Double, signal: Double? = nil, message: String?) {
     var body: [String: Any] = [
       "status": status,
       "elapsedMs": elapsedMs,
@@ -581,6 +616,7 @@ public class HeartRatePpgModule: Module {
       "quality": quality
     ]
     if let bpm = bpm { body["bpm"] = bpm }
+    if let spo2 = spo2 { body["spo2"] = spo2 }
     if let signal = signal { body["signal"] = signal }
     if let message = message { body["message"] = message }
     sendEvent("onPpgUpdate", body)
