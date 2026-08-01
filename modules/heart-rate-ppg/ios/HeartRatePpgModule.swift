@@ -1,4 +1,5 @@
 import AVFoundation
+import AudioToolbox
 import ExpoModulesCore
 import UIKit
 
@@ -37,6 +38,10 @@ public class HeartRatePpgModule: Module {
         return false
       }
       return device.hasTorch
+    }
+
+    AsyncFunction("playBeatAsync") {
+      AudioServicesPlaySystemSound(1104)
     }
 
     AsyncFunction("startMeasurementAsync") { (durationSeconds: Double?) in

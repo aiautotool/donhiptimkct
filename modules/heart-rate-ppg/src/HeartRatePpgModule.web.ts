@@ -7,6 +7,9 @@ class HeartRatePpgModule extends NativeModule<HeartRatePpgModuleEvents> {
     return false;
   }
 
+  async playBeatAsync(): Promise<void> {
+  }
+
   async startMeasurementAsync(): Promise<void> {
     this.emit('onPpgUpdate', {
       status: 'failed',

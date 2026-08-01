@@ -12,6 +12,8 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.Image
 import android.media.ImageReader
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -42,6 +44,7 @@ class HeartRatePpgModule : Module() {
   private var hasSeenFinger = false
   private var stableFingerFrames = 0
   private var cameraControlsLocked = false
+  private val toneGenerator by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 65) }
 
   override fun definition() = ModuleDefinition {
     Name("HeartRatePpg")
@@ -50,6 +53,10 @@ class HeartRatePpgModule : Module() {
 
     AsyncFunction("isAvailableAsync") {
       findBackCameraWithFlash() != null
+    }
+
+    AsyncFunction("playBeatAsync") {
+      toneGenerator.startTone(ToneGenerator.TONE_PROP_BEEP, 70)
     }
 
     AsyncFunction("startMeasurementAsync") { durationSeconds: Double? ->

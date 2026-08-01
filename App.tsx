@@ -114,6 +114,7 @@ export default function App() {
   const lastGoodUpdateRef = useRef<PpgUpdatePayload | undefined>(undefined);
   const measurementSavedRef = useRef(false);
   const routeRef = useRef<RouteKey>('main');
+  const beatTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     void bootstrap();
@@ -227,6 +228,29 @@ export default function App() {
       void deactivateKeepAwake(KEEP_AWAKE_TAG);
     };
   }, [isMeasuring]);
+
+  useEffect(() => {
+    if (beatTimerRef.current) {
+      clearTimeout(beatTimerRef.current);
+      beatTimerRef.current = undefined;
+    }
+    if (!isMeasuring || !liveBpm || liveBpm < 40 || selectedMetric !== 'heartRate') return;
+    let cancelled = false;
+    const scheduleBeat = () => {
+      if (cancelled) return;
+      const bpm = Math.max(45, Math.min(180, liveBpm));
+      void HeartRatePpgModule.playBeatAsync();
+      beatTimerRef.current = setTimeout(scheduleBeat, 60000 / bpm);
+    };
+    scheduleBeat();
+    return () => {
+      cancelled = true;
+      if (beatTimerRef.current) {
+        clearTimeout(beatTimerRef.current);
+        beatTimerRef.current = undefined;
+      }
+    };
+  }, [isMeasuring, liveBpm, selectedMetric]);
 
   const stats = useMemo(() => {
     const items = history;

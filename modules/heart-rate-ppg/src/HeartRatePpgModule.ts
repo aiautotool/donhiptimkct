@@ -4,6 +4,7 @@ import { HeartRatePpgModuleEvents } from './HeartRatePpg.types';
 
 declare class HeartRatePpgModule extends NativeModule<HeartRatePpgModuleEvents> {
   isAvailableAsync(): Promise<boolean>;
+  playBeatAsync(): Promise<void>;
   startMeasurementAsync(durationSeconds?: number): Promise<void>;
   stopMeasurementAsync(): Promise<void>;
 }
