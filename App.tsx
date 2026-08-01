@@ -511,6 +511,9 @@ function MeasureScreen({
   const complete = update.status === 'complete';
   const failed = update.status === 'failed';
   const metric = healthMetrics.find((item) => item.key === selectedMetric) ?? healthMetrics[0];
+  const liveMetricValue = visibleBpm ? displayValueForMetricFromBpm(selectedMetric, visibleBpm, update.quality) : undefined;
+  const measureValueText = failed ? '--' : liveMetricValue ? String(liveMetricValue).padStart(selectedMetric === 'heartRate' ? 2 : 0, '0') : isMeasuring ? '--' : '00';
+  const measureUnitText = failed ? 'ĐO LẠI' : isMeasuring && !liveMetricValue ? `${Math.max(0, 30 - Math.floor(update.elapsedMs / 1000))} giây` : displayUnitForMetric(selectedMetric);
   const heartScale = useRef(new Animated.Value(1)).current;
   const label = failed ? 'Tín hiệu không tốt' : complete ? 'Kết quả đo' : isMeasuring ? `Đang đo ${metric.label.toLowerCase()}` : 'Xin chào!';
   const sub = failed ? 'Đặt ngón tay che kín camera và giữ yên.' : complete ? statusByBpm(visibleBpm) : isMeasuring ? 'Giữ yên tay, đừng di chuyển.' : 'Bấm vòng tròn để bắt đầu đo.';
@@ -578,8 +581,8 @@ function MeasureScreen({
           ) : (
             <Animated.Text style={[styles.measureHeart, { transform: [{ scale: heartScale }] }]}>♥</Animated.Text>
           )}
-          <Text style={styles.measureBpm}>{failed ? '--' : visibleBpm ? String(visibleBpm).padStart(2, '0') : isMeasuring ? '--' : '00'}</Text>
-          <Text style={styles.measureUnit}>{failed ? 'ĐO LẠI' : isMeasuring && !visibleBpm ? `${Math.max(0, 30 - Math.floor(update.elapsedMs / 1000))} giây` : 'BPM'}</Text>
+          <Text style={styles.measureBpm}>{measureValueText}</Text>
+          <Text style={styles.measureUnit}>{measureUnitText}</Text>
         </Pressable>
         <Text style={styles.measureHint}>{selectedMetric === 'spo2' ? 'Estimated SpO2 - For wellness purposes only.' : selectedMetric === 'respiration' ? 'Estimated Respiratory Rate - Wellness Purpose Only' : sub}</Text>
         <Waveform values={values} active={isMeasuring} dark />
@@ -888,7 +891,7 @@ function ResultScreen({
     <View style={styles.resultPage}>
       <View style={styles.resultHeader}>
         <Pressable onPress={back}><Text style={styles.resultBack}>‹</Text></Pressable>
-        <Text style={styles.resultHeaderTitle}>Kết quả nhịp tim của bạn</Text>
+        <Text style={styles.resultHeaderTitle}>Kết quả {item.label.toLowerCase()} của bạn</Text>
         <Text style={styles.resultMenu}>•••</Text>
       </View>
       <ScrollView contentContainerStyle={styles.resultContent} showsVerticalScrollIndicator={false}>
@@ -1270,12 +1273,13 @@ function migrateMeasurement(item: Partial<Measurement> & { bpm: number; id?: str
   const metric = item.metric ?? 'heartRate';
   const definition = healthMetrics.find((metricItem) => metricItem.key === metric) ?? healthMetrics[0];
   const derived = deriveHealthValues(item.bpm, item.quality ?? 0.9, item.spO2, item.respiration);
+  const shouldRepairUnit = metric !== 'heartRate' && item.unit === 'BPM';
   return {
     id: item.id ?? `${Date.now()}`,
     metric,
     label: item.label ?? definition.label,
     value: item.value ?? valueForMetric(metric, item.bpm, derived),
-    unit: item.unit ?? definition.unit,
+    unit: shouldRepairUnit ? definition.unit : item.unit ?? definition.unit,
     bpm: item.bpm,
     ...derived,
     quality: item.quality ?? 0.9,
@@ -1301,6 +1305,17 @@ function valueForMetric(metric: MetricKey, bpm: number, derived: ReturnType<type
   if (metric === 'hrv') return derived.hrv;
   if (metric === 'stress') return derived.stress === 'Cao' ? 3 : derived.stress === 'Trung bình' ? 2 : 1;
   return bpm;
+}
+
+function displayValueForMetricFromBpm(metric: MetricKey, bpm: number, quality: number) {
+  const derived = deriveHealthValues(bpm, quality);
+  const value = valueForMetric(metric, bpm, derived);
+  return typeof value === 'number' ? value : bpm;
+}
+
+function displayUnitForMetric(metric: MetricKey) {
+  if (metric === 'stress') return 'MỨC';
+  return healthMetrics.find((item) => item.key === metric)?.unit ?? 'BPM';
 }
 
 function formatMetricValue(item: Measurement) {
