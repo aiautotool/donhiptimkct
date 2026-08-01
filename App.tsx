@@ -61,7 +61,6 @@ const ink = '#111827';
 const muted = '#667085';
 const line = '#e8edf3';
 const KEEP_AWAKE_TAG = 'heart-rate-measurement';
-const DEBUG_MODE = true;
 const LOG_KEY = 'donhiptim.debug.logs.v1';
 
 const healthMetrics: { key: MetricKey; label: string; short: string; unit: string; icon: string; color: string; description: string }[] = [
@@ -107,7 +106,6 @@ export default function App() {
   const [reminderOn, setReminderOn] = useState(false);
   const [themeLight, setThemeLight] = useState(true);
   const [language, setLanguageState] = useState<Language>('vi');
-  const [debugError, setDebugError] = useState<string | undefined>();
   const [debugLogs, setDebugLogs] = useState<DebugEntry[]>([]);
   const measurementsRef = useRef<Measurement[]>([]);
   const debugLogsRef = useRef<DebugEntry[]>([]);
@@ -278,7 +276,6 @@ export default function App() {
     setLiveBpm(undefined);
     setPendingNoteId(undefined);
     setPendingResult(undefined);
-    setDebugError(undefined);
     lastGoodUpdateRef.current = undefined;
     measurementSavedRef.current = false;
     setNoteText('');
@@ -405,8 +402,6 @@ export default function App() {
   }
 
   function showDebugError(code: string, data?: unknown) {
-    const message = `${code}\n${safeJson(data)}`;
-    setDebugError(message);
     void appendDebugLog(code, data);
   }
 
@@ -555,7 +550,6 @@ export default function App() {
           openHistory={() => goTab('history')}
           selectedMetric={selectedMetric}
           setSelectedMetric={setSelectedMetric}
-          debugError={debugError}
         />
       ) : activeTab === 'history' ? (
         <HistoryScreen items={history} realCount={measurements.length} openDetail={openDetail} openEmpty={() => setRoute('empty-history')} language={language} />
@@ -645,7 +639,6 @@ function MeasureScreen({
   openHistory,
   selectedMetric,
   setSelectedMetric,
-  debugError,
 }: {
   update: PpgUpdatePayload;
   language: Language;
@@ -661,7 +654,6 @@ function MeasureScreen({
   openHistory: () => void;
   selectedMetric: MetricKey;
   setSelectedMetric: (value: MetricKey) => void;
-  debugError?: string;
 }) {
   const complete = update.status === 'complete';
   const failed = update.status === 'failed';
@@ -742,10 +734,6 @@ function MeasureScreen({
         </Pressable>
         <Text style={styles.measureHint}>{selectedMetric === 'spo2' ? 'Estimated SpO2 - For wellness purposes only.' : selectedMetric === 'respiration' ? 'Estimated Respiratory Rate - Wellness Purpose Only' : sub}</Text>
         <Waveform values={values} active={isMeasuring} dark />
-        <View style={styles.progressBarWrap}>
-          <View style={[styles.progressBar, { width: `${Math.max(0, Math.min(progress, 1)) * 100}%` }]} />
-        </View>
-        <Text style={styles.percentText}>{Math.round(progress * 100)}%</Text>
         <View style={styles.measureActions}>
           <Pressable style={styles.darkGhostButton} onPress={openFinger}>
             <Text style={styles.darkGhostText}>{tx(language, 'fingerPosition')}</Text>
@@ -755,12 +743,6 @@ function MeasureScreen({
           </Pressable>
         </View>
         <Text style={styles.previousDark}>{tx(language, 'historyHint')}</Text>
-        {DEBUG_MODE ? (
-          <View style={styles.debugBox}>
-            <Text style={styles.debugTitle}>DEBUG ERROR</Text>
-            <Text style={styles.debugText}>{debugError ?? tx(language, 'screenshotLog')}</Text>
-          </View>
-        ) : null}
           </>
         )}
       </View>
@@ -1442,7 +1424,7 @@ function ClipboardArt() {
 const dictionary = {
   vi: {
     appTitle: 'APP ĐO NHỊP TIM', appSub: 'Theo dõi sức khỏe tim mạch mỗi ngày', helpUpper: 'TRỢ GIÚP', measureUpper: 'ĐO', historyUpper: 'LỊCH SỬ',
-    hello: 'Xin chào!', badSignal: 'Tín hiệu không tốt', result: 'Kết quả đo', measuring: 'Đang đo', coverCamera: 'Đặt ngón tay che kín camera và giữ yên.', holdStill: 'Giữ yên tay, đừng di chuyển.', tapStart: 'Bấm vòng tròn để bắt đầu đo.', chooseMetric: 'Chọn chỉ số bạn muốn đo', startMeasure: 'Bắt đầu đo', stop: 'Dừng đo', retry: 'Thử lại', retryUpper: 'ĐO LẠI', seconds: 'giây', fingerPosition: 'Vị trí đặt tay', historyHint: 'Lịch sử kết quả nằm trong tab Lịch sử', screenshotLog: 'Chụp màn hình để tự gửi log TXT.',
+    hello: 'Xin chào!', badSignal: 'Tín hiệu không tốt', result: 'Kết quả đo', measuring: 'Đang đo', coverCamera: 'Đặt ngón tay che kín camera và giữ yên.', holdStill: 'Giữ yên tay, đừng di chuyển.', tapStart: 'Bấm vòng tròn để bắt đầu đo.', chooseMetric: 'Chọn chỉ số bạn muốn đo', startMeasure: 'Bắt đầu đo', stop: 'Dừng đo', retry: 'Thử lại', retryUpper: 'ĐO LẠI', seconds: 'giây', fingerPosition: 'Vị trí đặt tay', historyHint: 'Lịch sử kết quả nằm trong tab Lịch sử',
     heartRate: 'Nhịp tim', spo2: 'SpO2', respiration: 'Nhịp thở', hrv: 'HRV', stress: 'Căng thẳng',
     heartRateDesc: 'Đo nhịp tim từ tín hiệu camera.', spo2Desc: 'Ước tính độ bão hòa oxy trong máu.', respirationDesc: 'Theo dõi tốc độ thở từ nhịp biến thiên.', hrvDesc: 'Độ biến thiên nhịp tim tham khảo.', stressDesc: 'Đánh giá căng thẳng từ nhịp tim.',
     settings: 'Cài đặt', heartUnit: 'Đơn vị nhịp tim', reminder: 'Nhắc nhở đo nhịp tim', reminderTime: 'Thời gian nhắc', lightTheme: 'Chủ đề sáng', language: 'Ngôn ngữ', guide: 'Hướng dẫn sử dụng', exportData: 'Xuất dữ liệu', privacy: 'Chính sách bảo mật', localOnly: 'Đã lưu cục bộ', about: 'Giới thiệu ứng dụng', version: 'Phiên bản 1.0.0', replayOnboarding: 'Xem lại onboarding', on: 'Bật', off: 'Tắt',
@@ -1456,7 +1438,7 @@ const dictionary = {
   },
   en: {
     appTitle: 'HEART RATE APP', appSub: 'Track your heart health every day', helpUpper: 'HELP', measureUpper: 'MEASURE', historyUpper: 'HISTORY',
-    hello: 'Hello!', badSignal: 'Poor signal', result: 'Result', measuring: 'Measuring', coverCamera: 'Cover the camera fully and keep still.', holdStill: 'Keep your finger still.', tapStart: 'Tap the circle to start.', chooseMetric: 'Choose a metric to measure', startMeasure: 'Start measuring', stop: 'Stop', retry: 'Retry', retryUpper: 'RETRY', seconds: 'sec', fingerPosition: 'Finger position', historyHint: 'Results are saved in History', screenshotLog: 'Take a screenshot to auto-share TXT logs.',
+    hello: 'Hello!', badSignal: 'Poor signal', result: 'Result', measuring: 'Measuring', coverCamera: 'Cover the camera fully and keep still.', holdStill: 'Keep your finger still.', tapStart: 'Tap the circle to start.', chooseMetric: 'Choose a metric to measure', startMeasure: 'Start measuring', stop: 'Stop', retry: 'Retry', retryUpper: 'RETRY', seconds: 'sec', fingerPosition: 'Finger position', historyHint: 'Results are saved in History',
     heartRate: 'Heart rate', spo2: 'SpO2', respiration: 'Respiration', hrv: 'HRV', stress: 'Stress',
     heartRateDesc: 'Measure heart rate from camera signal.', spo2Desc: 'Estimate blood oxygen saturation.', respirationDesc: 'Track breathing rate from pulse variation.', hrvDesc: 'Reference heart rate variability.', stressDesc: 'Estimate stress from heart signal.',
     settings: 'Settings', heartUnit: 'Heart rate unit', reminder: 'Heart rate reminder', reminderTime: 'Reminder time', lightTheme: 'Light theme', language: 'Language', guide: 'User guide', exportData: 'Export data', privacy: 'Privacy policy', localOnly: 'Stored locally', about: 'About app', version: 'Version 1.0.0', replayOnboarding: 'Replay onboarding', on: 'On', off: 'Off',
@@ -2020,24 +2002,6 @@ const styles = StyleSheet.create({
   waveSvg: {
     marginTop: 18,
   },
-  progressBarWrap: {
-    backgroundColor: '#263a4d',
-    borderRadius: 999,
-    height: 6,
-    marginTop: 4,
-    overflow: 'hidden',
-    width: screenWidth - 92,
-  },
-  progressBar: {
-    backgroundColor: rose,
-    height: 6,
-  },
-  percentText: {
-    color: '#ffffff',
-    fontSize: 18,
-    fontWeight: '900',
-    marginTop: 8,
-  },
   notePanel: {
     alignSelf: 'stretch',
     backgroundColor: navy2,
@@ -2129,26 +2093,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 16,
     textAlign: 'center',
-  },
-  debugBox: {
-    alignSelf: 'stretch',
-    backgroundColor: '#1f2937',
-    borderColor: '#ef4444',
-    borderRadius: 10,
-    borderWidth: 1,
-    marginTop: 12,
-    padding: 10,
-  },
-  debugTitle: {
-    color: '#fca5a5',
-    fontSize: 12,
-    fontWeight: '900',
-    marginBottom: 6,
-  },
-  debugText: {
-    color: '#ffffff',
-    fontSize: 11,
-    lineHeight: 16,
   },
   bottomTabs: {
     alignItems: 'center',
