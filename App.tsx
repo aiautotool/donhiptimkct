@@ -158,14 +158,29 @@ export default function App() {
         setLiveBpm(event.bpm);
         lastGoodUpdateRef.current = event;
       }
-      if (event.status === 'complete' && event.bpm) {
-        setFinalBpm(event.bpm);
+      if (event.status === 'complete') {
+        const completed = completeEventWithFallback(event);
+        if (!completed.bpm) {
+          showDebugError('COMPLETE_WITHOUT_BPM', { event, lastGood: lastGoodUpdateRef.current });
+          return;
+        }
+        setFinalBpm(completed.bpm);
         setLiveBpm(undefined);
-        lastGoodUpdateRef.current = event;
-        completeMeasurement(event);
+        lastGoodUpdateRef.current = completed;
+        completeMeasurement(completed);
       }
       if (event.status === 'failed' || event.status === 'stopped') {
         setLiveBpm(undefined);
+        const lastGood = lastGoodUpdateRef.current;
+        if (!measurementSavedRef.current && lastGood?.bpm && (lastGood.elapsedMs >= 12000 || event.progress >= 0.9)) {
+          completeMeasurement({
+            ...lastGood,
+            status: 'complete',
+            progress: 1,
+            message: `${event.status}: saved from last stable BPM`,
+          });
+          return;
+        }
         if (!measurementSavedRef.current) {
           setFinalBpm(undefined);
         }
@@ -344,6 +359,22 @@ export default function App() {
     });
   }
 
+  function completeEventWithFallback(event: PpgUpdatePayload): PpgUpdatePayload {
+    const lastGood = lastGoodUpdateRef.current;
+    if (event.bpm) return event;
+    if (!lastGood?.bpm) return event;
+    return {
+      ...lastGood,
+      ...event,
+      bpm: lastGood.bpm,
+      quality: event.quality || lastGood.quality,
+      elapsedMs: event.elapsedMs || lastGood.elapsedMs,
+      progress: 1,
+      status: 'complete',
+      message: event.message ?? 'complete fallback from last stable BPM',
+    };
+  }
+
   async function appendDebugLog(code: string, data?: unknown) {
     const entry: DebugEntry = { at: new Date().toISOString(), code, data };
     const next = [entry, ...debugLogsRef.current.slice(0, 199)];
@@ -430,6 +461,25 @@ export default function App() {
       <SafeAreaView style={styles.lightSafe}>
         <StatusBar style="dark" />
         <Onboarding page={onboardPage} setPage={setOnboardPage} finish={finishOnboarding} />
+      </SafeAreaView>
+    );
+  }
+
+  if (pendingResult) {
+    return (
+      <SafeAreaView style={styles.lightSafe}>
+        <StatusBar style="dark" />
+        <ResultScreen
+          item={pendingResult}
+          values={signalHistory}
+          noteText={noteText}
+          setNoteText={setNoteText}
+          activity={activity}
+          setActivity={setActivity}
+          back={closeResult}
+          finish={() => void finishResult()}
+          measureAgain={() => void measureAgainFromResult()}
+        />
       </SafeAreaView>
     );
   }
@@ -649,6 +699,11 @@ function MeasureScreen({
             <Pressable style={styles.primaryButton} onPress={toggleMeasurement}>
               <Text style={styles.primaryButtonText}>Bắt đầu đo {metric.label.toLowerCase()}</Text>
             </Pressable>
+            {DEBUG_MODE ? (
+              <Pressable style={styles.debugButton} onPress={shareDebugLog}>
+                <Text style={styles.debugButtonText}>Gửi file log TXT</Text>
+              </Pressable>
+            ) : null}
             {selectedMetric === 'spo2' ? <Text style={styles.spo2Disclaimer}>Estimated SpO2 - For wellness purposes only.</Text> : null}
           </View>
         ) : (
@@ -681,10 +736,10 @@ function MeasureScreen({
           </Pressable>
         </View>
         <Text style={styles.previousDark}>Lịch sử kết quả nằm trong tab Lịch sử</Text>
-        {DEBUG_MODE && debugError ? (
+        {DEBUG_MODE ? (
           <View style={styles.debugBox}>
             <Text style={styles.debugTitle}>DEBUG ERROR</Text>
-            <Text style={styles.debugText}>{debugError}</Text>
+            <Text style={styles.debugText}>{debugError ?? 'Không có lỗi hiện tại. Có thể gửi log TXT sau mỗi lần đo.'}</Text>
             <Pressable style={styles.debugButton} onPress={shareDebugLog}>
               <Text style={styles.debugButtonText}>Gửi file log TXT</Text>
             </Pressable>
