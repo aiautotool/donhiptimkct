@@ -248,8 +248,12 @@ export default function App() {
       setUpdate({ ...initialUpdate, status: 'failed', message: 'Tín hiệu SpO2 chưa đủ tốt. Hãy đặt kín camera và đo lại.' });
       return;
     }
+    if (metricKey === 'respiration' && typeof event.respiration !== 'number') {
+      setUpdate({ ...initialUpdate, status: 'failed', message: 'Tín hiệu nhịp thở chưa đủ tốt. Hãy giữ yên tay và đo lại.' });
+      return;
+    }
     const metric = healthMetrics.find((item) => item.key === metricKey) ?? healthMetrics[0];
-    const derived = deriveHealthValues(event.bpm!, event.quality, event.spo2);
+    const derived = deriveHealthValues(event.bpm!, event.quality, event.spo2, event.respiration);
     const metricValue = valueForMetric(metricKey, event.bpm!, derived);
     const record: Measurement = {
       id: `${Date.now()}`,
@@ -547,11 +551,9 @@ function MeasureScreen({
           <Text style={styles.measureBpm}>{failed ? '--' : visibleBpm ? String(visibleBpm).padStart(2, '0') : isMeasuring ? '--' : '00'}</Text>
           <Text style={styles.measureUnit}>{failed ? 'ĐO LẠI' : isMeasuring && !visibleBpm ? `${Math.max(0, 30 - Math.floor(update.elapsedMs / 1000))} giây` : 'BPM'}</Text>
         </Pressable>
-        <Text style={styles.measureHint}>{selectedMetric === 'spo2' ? 'Estimated SpO2 - For wellness purposes only.' : sub}</Text>
+        <Text style={styles.measureHint}>{selectedMetric === 'spo2' ? 'Estimated SpO2 - For wellness purposes only.' : selectedMetric === 'respiration' ? 'Estimated Respiratory Rate - Wellness Purpose Only' : sub}</Text>
         <Waveform values={values} active={isMeasuring} dark />
-        <View style={styles.progressBarWrap}>
-          <View style={[styles.progressBar, { width: `${Math.max(0, Math.min(progress, 1)) * 100}%` }]} />
-        </View>
+        
         <Text style={styles.percentText}>{Math.round(progress * 100)}%</Text>
         <View style={styles.measureActions}>
           <Pressable style={styles.darkGhostButton} onPress={openFinger}>
@@ -863,6 +865,7 @@ function ResultScreen({
         <RangeScale bpm={item.bpm} />
         <Text style={styles.resultSummary}>{item.label} / Trạng thái: {statusForMeasurement(item)}</Text>
         {item.metric === 'spo2' ? <Text style={styles.resultDisclaimer}>Estimated SpO2 - For wellness purposes only.</Text> : null}
+        {item.metric === 'respiration' ? <Text style={styles.resultDisclaimer}>Estimated Respiratory Rate - Wellness Purpose Only</Text> : null}
         <Text style={styles.resultQuality}>♡ Độ tin cậy: {Math.round(item.quality * 100)}%</Text>
 
         <View style={styles.activityRow}>
@@ -1216,7 +1219,7 @@ function ClipboardArt() {
 
 function makeDemo(id: string, metric: MetricKey, value: number, unit: string, bpm: number, hoursAgo: number): Measurement {
   const definition = healthMetrics.find((item) => item.key === metric) ?? healthMetrics[0];
-  const derived = deriveHealthValues(bpm, 0.95, metric === 'spo2' ? value : undefined);
+  const derived = deriveHealthValues(bpm, 0.95, metric === 'spo2' ? value : undefined, metric === 'respiration' ? value : undefined);
   return {
     id,
     metric,
@@ -1234,7 +1237,7 @@ function makeDemo(id: string, metric: MetricKey, value: number, unit: string, bp
 function migrateMeasurement(item: Partial<Measurement> & { bpm: number; id?: string; createdAt?: string }): Measurement {
   const metric = item.metric ?? 'heartRate';
   const definition = healthMetrics.find((metricItem) => metricItem.key === metric) ?? healthMetrics[0];
-  const derived = deriveHealthValues(item.bpm, item.quality ?? 0.9, item.spO2);
+  const derived = deriveHealthValues(item.bpm, item.quality ?? 0.9, item.spO2, item.respiration);
   return {
     id: item.id ?? `${Date.now()}`,
     metric,
@@ -1251,10 +1254,10 @@ function migrateMeasurement(item: Partial<Measurement> & { bpm: number; id?: str
   };
 }
 
-function deriveHealthValues(bpm: number, quality: number, measuredSpO2?: number) {
+function deriveHealthValues(bpm: number, quality: number, measuredSpO2?: number, measuredRespiration?: number) {
   const qualityBonus = Math.round(Math.max(0, Math.min(quality, 1)) * 2);
   const spO2 = measuredSpO2;
-  const respiration = Math.max(12, Math.min(22, Math.round(12 + bpm / 18)));
+  const respiration = measuredRespiration;
   const hrv = Math.max(25, Math.min(86, Math.round(88 - bpm * 0.55 + qualityBonus * 4)));
   const stress = bpm > 100 || hrv < 38 ? 'Cao' : bpm > 86 || hrv < 50 ? 'Trung bình' : 'Thấp';
   const temperature = Math.round((36.2 + Math.max(0, bpm - 72) * 0.006 + (quality < 0.7 ? 0.1 : 0)) * 10) / 10;
@@ -1265,7 +1268,7 @@ function deriveHealthValues(bpm: number, quality: number, measuredSpO2?: number)
 
 function valueForMetric(metric: MetricKey, bpm: number, derived: ReturnType<typeof deriveHealthValues>) {
   if (metric === 'spo2') return derived.spO2 ?? 0;
-  if (metric === 'respiration') return derived.respiration;
+  if (metric === 'respiration') return derived.respiration ?? 0;
   if (metric === 'hrv') return derived.hrv;
   if (metric === 'temperature') return derived.temperature;
   if (metric === 'bloodPressure') return Number(derived.bloodPressure.split('/')[0]);

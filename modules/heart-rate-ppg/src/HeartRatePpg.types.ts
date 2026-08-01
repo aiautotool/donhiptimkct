@@ -6,6 +6,7 @@ export type PpgUpdatePayload = {
   progress: number;
   bpm?: number;
   spo2?: number;
+  respiration?: number;
   quality: number;
   signal?: number;
   message?: string;

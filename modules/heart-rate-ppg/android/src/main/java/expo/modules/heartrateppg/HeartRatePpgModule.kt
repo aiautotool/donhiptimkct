@@ -211,13 +211,15 @@ class HeartRatePpgModule : Module() {
       val result = estimateBpm()
       if (result.first != null && result.second >= 0.38) {
         val spo2 = estimateSpO2()
+        val respiration = estimateRespiration()
         send(
           "complete",
           elapsed,
           1.0,
           bpm = result.first,
           spo2 = spo2.first,
-          quality = max(result.second, (result.second * 0.75 + spo2.second * 0.25).coerceIn(0.0, 1.0))
+          respiration = respiration.first,
+          quality = max(result.second, (result.second * 0.68 + spo2.second * 0.16 + respiration.second * 0.16).coerceIn(0.0, 1.0))
         )
         cleanup()
       } else {
@@ -406,6 +408,84 @@ class HeartRatePpgModule : Module() {
     val quality = (ratioQuality * 0.65 + perfusionQuality * 0.35).coerceIn(0.0, 1.0)
     if (quality < 0.42) return Pair(null, quality)
     return Pair(spo2, quality)
+  }
+
+  private fun estimateRespiration(): Pair<Int?, Double> {
+    if (!isFingerDetected() && !(hasSeenFinger && missingFingerFrames < 45)) return Pair(null, 0.0)
+    val lastTime = samples.lastOrNull()?.time ?: return Pair(null, 0.0)
+    val usable = samples.filter { it.time >= max(0.0, lastTime - 30.0) }
+    if (usable.size <= 300) return Pair(null, 0.0)
+    val first = usable.firstOrNull()?.time ?: return Pair(null, 0.0)
+    val last = usable.lastOrNull()?.time ?: return Pair(null, 0.0)
+    if (last <= first) return Pair(null, 0.0)
+    val sampleRate = (usable.size - 1) / (last - first)
+    if (sampleRate <= 5) return Pair(null, 0.0)
+
+    val candidates = listOfNotNull(
+      respirationFromValues(usable.map { it.red }, sampleRate),
+      respirationFromValues(usable.map { it.green }, sampleRate),
+      respirationFromValues(usable.map { (it.red + it.green) / 2 }, sampleRate)
+    )
+    val best = candidates.maxByOrNull { it.second } ?: return Pair(null, 0.0)
+    if (best.second < 0.5) return Pair(null, best.second)
+    return best
+  }
+
+  private fun respirationFromValues(values: List<Double>, sampleRate: Double): Pair<Int?, Double>? {
+    val signal = respiratorySignal(values, sampleRate)
+    if (signal.size <= 300 || standardDeviation(signal) <= 0.00004) return null
+
+    val powers = mutableMapOf<Int, Double>()
+    var bestRpm = 0
+    var bestPower = 0.0
+    for (rpm in 6..30) {
+      val power = spectralPower(signal, sampleRate, rpm.toDouble())
+      powers[rpm] = power
+      if (power > bestPower) {
+        bestPower = power
+        bestRpm = rpm
+      }
+    }
+    if (bestRpm == 0) return null
+    val averagePower = powers.values.average()
+    val spectralRatio = bestPower / max(averagePower, 0.0000001)
+    if (spectralRatio < 1.35) return null
+
+    val ac = respiratoryAutocorrelation(signal, sampleRate)
+    if (ac != null && abs((ac.first ?: bestRpm) - bestRpm) > 4) return null
+    val agreement = ac?.let { (1 - abs((it.first ?: bestRpm) - bestRpm) / 4.0).coerceIn(0.0, 1.0) } ?: 0.65
+    val rpm = ac?.let { (bestRpm * 0.55 + (it.first ?: bestRpm) * 0.45).roundToInt() } ?: bestRpm
+    if (rpm !in 6..30) return null
+    val quality = (((spectralRatio - 1) / 3) * 0.65 + agreement * 0.35).coerceIn(0.0, 1.0)
+    return Pair(rpm, quality)
+  }
+
+  private fun respiratorySignal(values: List<Double>, sampleRate: Double): List<Double> {
+    val mean = values.average()
+    if (mean <= 1) return emptyList()
+    val normalized = values.map { (it - mean) / mean }
+    val smooth = movingAverage(medianFilter(normalized, 5), max(5, (sampleRate * 0.7).roundToInt()))
+    val baseline = movingAverage(smooth, max(31, (sampleRate * 6).roundToInt()))
+    return smooth.zip(baseline) { value, base -> value - base }
+  }
+
+  private fun respiratoryAutocorrelation(signal: List<Double>, sampleRate: Double): Pair<Int?, Double>? {
+    val minLag = max(1, (sampleRate * 60 / 30).roundToInt())
+    val maxLag = min(signal.size - 2, (sampleRate * 60 / 6).roundToInt())
+    if (maxLag <= minLag) return null
+    var bestLag = 0
+    var bestCorr = -1.0
+    for (lag in minLag..maxLag) {
+      val corr = autocorrelation(signal, lag)
+      if (corr > bestCorr) {
+        bestCorr = corr
+        bestLag = lag
+      }
+    }
+    if (bestLag <= 0 || bestCorr < 0.2) return null
+    val rpm = (60 * sampleRate / bestLag).roundToInt()
+    if (rpm !in 6..30) return null
+    return Pair(rpm, ((bestCorr - 0.15) / 0.55).coerceIn(0.0, 1.0))
   }
 
   private fun liveBpmEstimate(): Pair<Int?, Double> {
@@ -643,6 +723,7 @@ class HeartRatePpgModule : Module() {
     progress: Double,
     bpm: Int? = null,
     spo2: Int? = null,
+    respiration: Int? = null,
     quality: Double,
     signal: Double? = null,
     message: String? = null
@@ -655,6 +736,7 @@ class HeartRatePpgModule : Module() {
     )
     bpm?.let { body["bpm"] = it }
     spo2?.let { body["spo2"] = it }
+    respiration?.let { body["respiration"] = it }
     signal?.let { body["signal"] = it }
     message?.let { body["message"] = it }
     sendEvent("onPpgUpdate", body)

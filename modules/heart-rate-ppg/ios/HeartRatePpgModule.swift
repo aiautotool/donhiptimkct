@@ -225,7 +225,8 @@ public class HeartRatePpgModule: Module {
       let result = estimateBpm()
       if let bpm = result.bpm, result.quality >= 0.38 {
         let spo2 = estimateSpO2()
-        send(status: "complete", elapsedMs: Int(elapsed * 1000), progress: 1, bpm: bpm, spo2: spo2.spo2, quality: min(max(result.quality * 0.75 + spo2.quality * 0.25, result.quality), 1), message: nil)
+        let respiration = estimateRespiration()
+        send(status: "complete", elapsedMs: Int(elapsed * 1000), progress: 1, bpm: bpm, spo2: spo2.spo2, respiration: respiration.rpm, quality: min(max(result.quality * 0.68 + spo2.quality * 0.16 + respiration.quality * 0.16, result.quality), 1), message: nil)
         cleanup()
       } else {
         stop(status: "stopped", message: "Tin hieu chua du tot. Hay giu ngon tay nhe hon va do lai.")
@@ -383,6 +384,81 @@ public class HeartRatePpgModule: Module {
     let quality = min(max(ratioQuality * 0.65 + perfusionQuality * 0.35, 0), 1)
     guard quality >= 0.42 else { return (nil, quality) }
     return (spo2, quality)
+  }
+
+  private func estimateRespiration() -> (rpm: Int?, quality: Double) {
+    guard isFingerDetected() || (hasSeenFinger && missingFingerFrames < 45) else { return (nil, 0) }
+    let lastTime = samples.last?.time ?? 0
+    let usable = samples.filter { $0.time >= max(0, lastTime - 30) }
+    guard usable.count > 300, let first = usable.first?.time, let last = usable.last?.time, last > first else { return (nil, 0) }
+    let sampleRate = Double(usable.count - 1) / (last - first)
+    guard sampleRate > 5 else { return (nil, 0) }
+
+    let channels = [
+      respirationFromValues(usable.map(\.red), sampleRate: sampleRate),
+      respirationFromValues(usable.map(\.green), sampleRate: sampleRate),
+      respirationFromValues(usable.map { ($0.red + $0.green) / 2 }, sampleRate: sampleRate)
+    ].compactMap { $0 }
+    guard let best = channels.max(by: { $0.quality < $1.quality }) else { return (nil, 0) }
+    guard best.quality >= 0.5 else { return (nil, best.quality) }
+    return best
+  }
+
+  private func respirationFromValues(_ values: [Double], sampleRate: Double) -> (rpm: Int, quality: Double)? {
+    let signal = respiratorySignal(values: values, sampleRate: sampleRate)
+    guard signal.count > 300, standardDeviation(signal) > 0.00004 else { return nil }
+
+    var powers: [Int: Double] = [:]
+    var bestRpm = 0
+    var bestPower = 0.0
+    for rpm in 6...30 {
+      let power = spectralPower(signal, sampleRate: sampleRate, bpm: Double(rpm))
+      powers[rpm] = power
+      if power > bestPower {
+        bestPower = power
+        bestRpm = rpm
+      }
+    }
+    guard bestRpm > 0 else { return nil }
+    let averagePower = powers.values.reduce(0, +) / Double(max(powers.count, 1))
+    let spectralRatio = bestPower / max(averagePower, 0.0000001)
+    guard spectralRatio >= 1.35 else { return nil }
+
+    let ac = respiratoryAutocorrelation(signal: signal, sampleRate: sampleRate)
+    if let ac, abs(ac.rpm - bestRpm) > 4 { return nil }
+    let agreement = ac.map { max(0, 1 - Double(abs($0.rpm - bestRpm)) / 4) } ?? 0.65
+    let rpm = ac.map { Int((Double(bestRpm) * 0.55 + Double($0.rpm) * 0.45).rounded()) } ?? bestRpm
+    let quality = min(max(((spectralRatio - 1) / 3) * 0.65 + agreement * 0.35, 0), 1)
+    guard rpm >= 6 && rpm <= 30 else { return nil }
+    return (rpm, quality)
+  }
+
+  private func respiratorySignal(values: [Double], sampleRate: Double) -> [Double] {
+    let mean = values.reduce(0, +) / Double(max(values.count, 1))
+    guard mean > 1 else { return [] }
+    let normalized = values.map { ($0 - mean) / mean }
+    let smooth = movingAverage(medianFilter(normalized, window: 5), window: max(5, Int(sampleRate * 0.7)))
+    let baseline = movingAverage(smooth, window: max(31, Int(sampleRate * 6)))
+    return zip(smooth, baseline).map { $0 - $1 }
+  }
+
+  private func respiratoryAutocorrelation(signal: [Double], sampleRate: Double) -> (rpm: Int, quality: Double)? {
+    let minLag = max(1, Int(sampleRate * 60 / 30))
+    let maxLag = min(signal.count - 2, Int(sampleRate * 60 / 6))
+    guard maxLag > minLag else { return nil }
+    var bestLag = 0
+    var bestCorr = -1.0
+    for lag in minLag...maxLag {
+      let corr = autocorrelation(signal, lag: lag)
+      if corr > bestCorr {
+        bestCorr = corr
+        bestLag = lag
+      }
+    }
+    guard bestLag > 0, bestCorr >= 0.2 else { return nil }
+    let rpm = Int((60 * sampleRate / Double(bestLag)).rounded())
+    guard rpm >= 6 && rpm <= 30 else { return nil }
+    return (rpm, min(max((bestCorr - 0.15) / 0.55, 0), 1))
   }
 
   private func liveBpmEstimate() -> (bpm: Int?, quality: Double) {
@@ -608,7 +684,7 @@ public class HeartRatePpgModule: Module {
     return sorted[middle]
   }
 
-  private func send(status: String, elapsedMs: Int, progress: Double, bpm: Int? = nil, spo2: Int? = nil, quality: Double, signal: Double? = nil, message: String?) {
+  private func send(status: String, elapsedMs: Int, progress: Double, bpm: Int? = nil, spo2: Int? = nil, respiration: Int? = nil, quality: Double, signal: Double? = nil, message: String?) {
     var body: [String: Any] = [
       "status": status,
       "elapsedMs": elapsedMs,
@@ -617,6 +693,7 @@ public class HeartRatePpgModule: Module {
     ]
     if let bpm = bpm { body["bpm"] = bpm }
     if let spo2 = spo2 { body["spo2"] = spo2 }
+    if let respiration = respiration { body["respiration"] = respiration }
     if let signal = signal { body["signal"] = signal }
     if let message = message { body["message"] = message }
     sendEvent("onPpgUpdate", body)
