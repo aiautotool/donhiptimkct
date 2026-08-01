@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Camera } from 'expo-camera';
 import * as FileSystem from 'expo-file-system/legacy';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import * as Notifications from 'expo-notifications';
 import * as Sharing from 'expo-sharing';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -10,6 +11,7 @@ import {
   Alert,
   Animated,
   Dimensions,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -47,10 +49,19 @@ type RouteKey = 'main' | 'guide' | 'finger' | 'result' | 'detail' | 'reminder' |
 type DebugEntry = { at: string; code: string; data?: unknown };
 type HistoryPeriod = 'day' | 'week' | 'month';
 type Language = 'vi' | 'en';
+type ReminderConfig = {
+  enabled: boolean;
+  startHour: number;
+  startMinute: number;
+  timesPerDay: number;
+  intervalHours: number;
+  repeatDaily: boolean;
+};
 
 const STORAGE_KEY = 'donhiptim.measurements.v2';
 const CONSENT_KEY = 'donhiptim.consent.v1';
 const LANGUAGE_KEY = 'donhiptim.language.v1';
+const REMINDER_KEY = 'donhiptim.reminder.v1';
 const screenWidth = Dimensions.get('window').width;
 const dialSize = Math.min(screenWidth - 88, 280);
 const rose = '#f34f75';
@@ -62,6 +73,25 @@ const muted = '#667085';
 const line = '#e8edf3';
 const KEEP_AWAKE_TAG = 'heart-rate-measurement';
 const LOG_KEY = 'donhiptim.debug.logs.v1';
+const REMINDER_CHANNEL_ID = 'heart-rate-reminders';
+const defaultReminderConfig: ReminderConfig = {
+  enabled: false,
+  startHour: 9,
+  startMinute: 0,
+  timesPerDay: 1,
+  intervalHours: 4,
+  repeatDaily: true,
+};
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    priority: Notifications.AndroidNotificationPriority.DEFAULT,
+  }),
+});
 
 const healthMetrics: { key: MetricKey; label: string; short: string; unit: string; icon: string; color: string; description: string }[] = [
   { key: 'heartRate', label: 'Nhịp tim', short: 'Nhịp tim (BPM)', unit: 'BPM', icon: '♥', color: rose, description: 'Đo nhịp tim từ tín hiệu camera.' },
@@ -104,7 +134,7 @@ export default function App() {
   const [activity, setActivity] = useState('Sau tập');
   const [signalHistory, setSignalHistory] = useState<number[]>([]);
   const [busy, setBusy] = useState(false);
-  const [reminderOn, setReminderOn] = useState(false);
+  const [reminderConfig, setReminderConfig] = useState<ReminderConfig>(defaultReminderConfig);
   const [themeLight, setThemeLight] = useState(true);
   const [language, setLanguageState] = useState<Language>('vi');
   const [debugLogs, setDebugLogs] = useState<DebugEntry[]>([]);
@@ -228,6 +258,17 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
+  useEffect(() => {
+    // Khi người dùng bấm notification nhắc đo, đưa họ về ngay màn hình đo.
+    const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
+      void appendDebugLog('REMINDER_OPENED', response.notification.request.content.data);
+      setPendingResult(undefined);
+      setRoute('main');
+      setActiveTab('measure');
+    });
+    return () => subscription.remove();
+  }, []);
+
   const latest = measurements[0];
   const history = measurements.length > 0 ? measurements : demoHistory;
   const isMeasuring = update.status === 'warming' || update.status === 'measuring';
@@ -306,14 +347,17 @@ export default function App() {
 
   async function bootstrap() {
     // Đọc dữ liệu lưu cục bộ cùng lúc để tránh UI cập nhật lệch nhịp lúc mở app.
-    const [storedConsent, storedMeasurements, storedLogs, storedLanguage] = await Promise.all([
+    const [storedConsent, storedMeasurements, storedLogs, storedLanguage, storedReminder] = await Promise.all([
       AsyncStorage.getItem(CONSENT_KEY),
       AsyncStorage.getItem(STORAGE_KEY),
       AsyncStorage.getItem(LOG_KEY),
       AsyncStorage.getItem(LANGUAGE_KEY),
+      AsyncStorage.getItem(REMINDER_KEY),
     ]);
     setAccepted(storedConsent === 'accepted');
     if (storedLanguage === 'en' || storedLanguage === 'vi') setLanguageState(storedLanguage);
+    const parsedReminder = parseReminderConfig(storedReminder);
+    setReminderConfig(parsedReminder);
     const parsed = storedMeasurements ? JSON.parse(storedMeasurements).map(migrateMeasurement) : [];
     setMeasurements(parsed);
     measurementsRef.current = parsed;
@@ -332,6 +376,15 @@ export default function App() {
     // Lưu ngôn ngữ ngay để giữ lựa chọn sau khi đóng mở app.
     setLanguageState(value);
     await AsyncStorage.setItem(LANGUAGE_KEY, value);
+  }
+
+  async function updateReminderConfig(patch: Partial<ReminderConfig>) {
+    // Mỗi lần đổi lịch nhắc sẽ lưu cấu hình rồi schedule lại notification native.
+    const next = sanitizeReminderConfig({ ...reminderConfig, ...patch });
+    setReminderConfig(next);
+    await AsyncStorage.setItem(REMINDER_KEY, JSON.stringify(next));
+    await scheduleReminderNotifications(next, language);
+    void appendDebugLog('REMINDER_UPDATED', next);
   }
 
   async function startMeasurement() {
@@ -594,8 +647,8 @@ export default function App() {
           language={language}
           selected={selected}
           history={history}
-          reminderOn={reminderOn}
-          setReminderOn={setReminderOn}
+          reminderConfig={reminderConfig}
+          updateReminderConfig={(patch) => void updateReminderConfig(patch)}
           pendingResult={pendingResult}
           values={signalHistory}
           noteText={noteText}
@@ -632,8 +685,10 @@ export default function App() {
           openGuide={() => setRoute('guide')}
           openFinger={() => setRoute('finger')}
           openHistory={() => goTab('history')}
+          openReminder={() => setRoute('reminder')}
           selectedMetric={selectedMetric}
           setSelectedMetric={setSelectedMetric}
+          reminderConfig={reminderConfig}
         />
       ) : activeTab === 'history' ? (
         <HistoryScreen items={history} realCount={measurements.length} openDetail={openDetail} openEmpty={() => setRoute('empty-history')} language={language} />
@@ -641,8 +696,8 @@ export default function App() {
         <StatsScreen items={history} stats={stats} language={language} />
       ) : (
         <SettingsScreen
-          reminderOn={reminderOn}
-          setReminderOn={setReminderOn}
+          reminderConfig={reminderConfig}
+          updateReminderConfig={(patch) => void updateReminderConfig(patch)}
           themeLight={themeLight}
           setThemeLight={setThemeLight}
           language={language}
@@ -721,8 +776,10 @@ function MeasureScreen({
   openGuide,
   openFinger,
   openHistory,
+  openReminder,
   selectedMetric,
   setSelectedMetric,
+  reminderConfig,
 }: {
   update: PpgUpdatePayload;
   language: Language;
@@ -736,8 +793,10 @@ function MeasureScreen({
   openGuide: () => void;
   openFinger: () => void;
   openHistory: () => void;
+  openReminder: () => void;
   selectedMetric: MetricKey;
   setSelectedMetric: (value: MetricKey) => void;
+  reminderConfig: ReminderConfig;
 }) {
   const complete = update.status === 'complete';
   const failed = update.status === 'failed';
@@ -798,6 +857,16 @@ function MeasureScreen({
             ))}
             <Pressable style={styles.primaryButton} onPress={toggleMeasurement}>
               <Text style={styles.primaryButtonText}>{tx(language, 'startMeasure')} {metricName.toLowerCase()}</Text>
+            </Pressable>
+            <Pressable style={styles.homeReminderCard} onPress={openReminder}>
+              <View style={styles.homeReminderIcon}>
+                <Text style={styles.homeReminderIconText}>◴</Text>
+              </View>
+              <View style={styles.homeReminderTextWrap}>
+                <Text style={styles.homeReminderTitle}>{tx(language, 'reminder')}</Text>
+                <Text style={styles.homeReminderSub}>{reminderSummary(reminderConfig, language)}</Text>
+              </View>
+              <Text style={styles.chevron}>›</Text>
             </Pressable>
             {selectedMetric === 'spo2' ? <Text style={styles.spo2Disclaimer}>Estimated SpO2 - For wellness purposes only.</Text> : null}
           </View>
@@ -914,8 +983,8 @@ function StatsScreen({ items, stats, language }: { items: Measurement[]; stats: 
 }
 
 function SettingsScreen({
-  reminderOn,
-  setReminderOn,
+  reminderConfig,
+  updateReminderConfig,
   themeLight,
   setThemeLight,
   language,
@@ -925,8 +994,8 @@ function SettingsScreen({
   openExport,
   resetOnboarding,
 }: {
-  reminderOn: boolean;
-  setReminderOn: (value: boolean) => void;
+  reminderConfig: ReminderConfig;
+  updateReminderConfig: (patch: Partial<ReminderConfig>) => void;
   themeLight: boolean;
   setThemeLight: (value: boolean) => void;
   language: Language;
@@ -939,8 +1008,11 @@ function SettingsScreen({
   return (
     <ScreenScaffold title={tx(language, 'settings')}>
       <SettingsRow icon="♡" title={tx(language, 'heartUnit')} value="BPM" />
-      <SettingsRow icon="◴" title={tx(language, 'reminder')} value={reminderOn ? tx(language, 'on') : tx(language, 'off')} onPress={openReminder} />
-      <SettingsRow icon="⏰" title={tx(language, 'reminderTime')} value="09:00" />
+      <SettingsRow icon="◴" title={tx(language, 'reminder')} value={reminderSummary(reminderConfig, language)} onPress={openReminder} />
+      <View style={styles.settingSwitchRow}>
+        <View style={styles.settingLeft}><Text style={styles.settingIcon}>⏰</Text><Text style={styles.settingTitle}>{tx(language, 'reminderQuickToggle')}</Text></View>
+        <Switch value={reminderConfig.enabled} onValueChange={(enabled) => updateReminderConfig({ enabled })} trackColor={{ true: '#f8b6c4' }} thumbColor={reminderConfig.enabled ? rose : '#ffffff'} />
+      </View>
       <View style={styles.settingSwitchRow}>
         <View style={styles.settingLeft}><Text style={styles.settingIcon}>☼</Text><Text style={styles.settingTitle}>{tx(language, 'lightTheme')}</Text></View>
         <Switch value={themeLight} onValueChange={setThemeLight} trackColor={{ true: '#f8b6c4' }} thumbColor={themeLight ? rose : '#ffffff'} />
@@ -962,8 +1034,8 @@ function RouteScreen({
   language,
   selected,
   history,
-  reminderOn,
-  setReminderOn,
+  reminderConfig,
+  updateReminderConfig,
   pendingResult,
   values,
   noteText,
@@ -979,8 +1051,8 @@ function RouteScreen({
   language: Language;
   selected?: Measurement;
   history: Measurement[];
-  reminderOn: boolean;
-  setReminderOn: (value: boolean) => void;
+  reminderConfig: ReminderConfig;
+  updateReminderConfig: (patch: Partial<ReminderConfig>) => void;
   pendingResult?: Measurement;
   values: number[];
   noteText: string;
@@ -1073,8 +1145,42 @@ function RouteScreen({
         <Text style={styles.bigInstruction}>{tx(language, 'reminderBig')}</Text>
         <Text style={styles.centerMuted}>{tx(language, 'reminderSub')}</Text>
         <View style={styles.settingSwitchRow}>
-          <View style={styles.settingLeft}><Text style={styles.settingIcon}>◴</Text><Text style={styles.settingTitle}>{tx(language, 'dailyReminder')}</Text></View>
-          <Switch value={reminderOn} onValueChange={setReminderOn} trackColor={{ true: '#f8b6c4' }} thumbColor={reminderOn ? rose : '#ffffff'} />
+          <View style={styles.settingLeft}><Text style={styles.settingIcon}>◴</Text><Text style={styles.settingTitle}>{tx(language, 'enableReminder')}</Text></View>
+          <Switch value={reminderConfig.enabled} onValueChange={(enabled) => updateReminderConfig({ enabled })} trackColor={{ true: '#f8b6c4' }} thumbColor={reminderConfig.enabled ? rose : '#ffffff'} />
+        </View>
+        <View style={styles.reminderCard}>
+          <Text style={styles.reminderCardTitle}>{tx(language, 'reminderSchedule')}</Text>
+          <TimeStepper
+            label={tx(language, 'startTime')}
+            hour={reminderConfig.startHour}
+            minute={reminderConfig.startMinute}
+            onChange={(startHour, startMinute) => updateReminderConfig({ startHour, startMinute })}
+          />
+          <StepperRow
+            label={tx(language, 'timesPerDay')}
+            value={reminderConfig.timesPerDay}
+            suffix={tx(language, 'times')}
+            min={1}
+            max={8}
+            onChange={(timesPerDay) => updateReminderConfig({ timesPerDay })}
+          />
+          <StepperRow
+            label={tx(language, 'intervalHours')}
+            value={reminderConfig.intervalHours}
+            suffix={tx(language, 'hours')}
+            min={1}
+            max={12}
+            onChange={(intervalHours) => updateReminderConfig({ intervalHours })}
+          />
+          <View style={styles.settingSwitchRow}>
+            <View style={styles.settingLeft}><Text style={styles.settingIcon}>↻</Text><Text style={styles.settingTitle}>{tx(language, 'repeatDaily')}</Text></View>
+            <Switch value={reminderConfig.repeatDaily} onValueChange={(repeatDaily) => updateReminderConfig({ repeatDaily })} trackColor={{ true: '#f8b6c4' }} thumbColor={reminderConfig.repeatDaily ? rose : '#ffffff'} />
+          </View>
+        </View>
+        <View style={styles.reminderTimesBox}>
+          <Text style={styles.reminderTimesTitle}>{tx(language, 'nextReminderTimes')}</Text>
+          <Text style={styles.reminderTimesText}>{reminderTimes(reminderConfig).join('   ')}</Text>
+          <Text style={styles.reminderHelpText}>{reminderSummary(reminderConfig, language)}</Text>
         </View>
         <Pressable style={styles.primaryButton} onPress={start}>
           <Text style={styles.primaryButtonText}>{tx(language, 'measureNow')}</Text>
@@ -1365,6 +1471,72 @@ function SettingsRow({ icon, title, value, onPress }: { icon: string; title: str
   );
 }
 
+function StepperRow({
+  label,
+  value,
+  suffix,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  suffix: string;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <View style={styles.stepperRow}>
+      <Text style={styles.stepperLabel}>{label}</Text>
+      <View style={styles.stepperControls}>
+        <Pressable style={styles.stepperButton} onPress={() => onChange(Math.max(min, value - 1))}>
+          <Text style={styles.stepperButtonText}>−</Text>
+        </Pressable>
+        <Text style={styles.stepperValue}>{value} {suffix}</Text>
+        <Pressable style={styles.stepperButton} onPress={() => onChange(Math.min(max, value + 1))}>
+          <Text style={styles.stepperButtonText}>+</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+function TimeStepper({
+  label,
+  hour,
+  minute,
+  onChange,
+}: {
+  label: string;
+  hour: number;
+  minute: number;
+  onChange: (hour: number, minute: number) => void;
+}) {
+  return (
+    <View style={styles.stepperRow}>
+      <Text style={styles.stepperLabel}>{label}</Text>
+      <View style={styles.timeStepperGrid}>
+        <Pressable style={styles.stepperButton} onPress={() => onChange((hour + 23) % 24, minute)}>
+          <Text style={styles.stepperButtonText}>−</Text>
+        </Pressable>
+        <Text style={styles.stepperValue}>{twoDigits(hour)}</Text>
+        <Pressable style={styles.stepperButton} onPress={() => onChange((hour + 1) % 24, minute)}>
+          <Text style={styles.stepperButtonText}>+</Text>
+        </Pressable>
+        <Text style={styles.timeColon}>:</Text>
+        <Pressable style={styles.stepperButton} onPress={() => onChange(hour, (minute + 45) % 60)}>
+          <Text style={styles.stepperButtonText}>−</Text>
+        </Pressable>
+        <Text style={styles.stepperValue}>{twoDigits(minute)}</Text>
+        <Pressable style={styles.stepperButton} onPress={() => onChange(hour, (minute + 15) % 60)}>
+          <Text style={styles.stepperButtonText}>+</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function GuideStep({ number, title, text }: { number: string; title: string; text: string }) {
   return (
     <View style={styles.guideStep}>
@@ -1515,7 +1687,7 @@ const dictionary = {
     historyTitle: 'Lịch sử đo', day: 'Ngày', week: 'Tuần', month: 'Tháng', emptyHistory: 'Lịch sử trống', demoHistoryHint: 'Bạn chưa có dữ liệu thật. Danh sách bên dưới là dữ liệu mẫu để xem giao diện.', home: 'Trang chủ', history: 'Lịch sử', stats: 'Thống kê',
     average: 'Trung bình', highest: 'Cao nhất', lowest: 'Thấp nhất', heartZones: 'Vùng nhịp tim', lowZone: 'Thấp (<60)', normalZone: 'Bình thường (60-100)', highZone: 'Cao (>100)',
     guideTitle: 'Hướng dẫn đo', guide1Title: 'Đặt ngón tay', guide1Text: 'Đặt đầu ngón tay che kín camera và đèn flash.', guide2Title: 'Giữ yên tay', guide2Text: 'Giữ tay ổn định trong 15-30 giây để có kết quả chính xác.', guide3Title: 'Chờ kết quả', guide3Text: 'Ứng dụng sẽ phân tích và hiển thị nhịp tim của bạn.', gotItStart: 'Hiểu rồi, bắt đầu đo', fingerInstruction: 'Đặt ngón tay che kín camera và đèn flash', fingerHint: 'Giữ yên tay và không ấn quá mạnh để tín hiệu ổn định hơn.',
-    detailTitle: 'Chi tiết kết quả', note: 'Ghi chú', activity: 'Hoàn cảnh đo', duration: 'Thời gian đo', confidence: 'Độ tin cậy', reminderTitle: 'Nhắc nhở đo nhịp tim', reminderBig: 'Đã đến lúc kiểm tra nhịp tim của bạn!', reminderSub: 'Duy trì thói quen tốt để bảo vệ sức khỏe tim mạch.', dailyReminder: 'Nhắc mỗi ngày lúc 09:00', measureNow: 'Đo ngay', exportPdf: 'Xuất PDF', exportExcel: 'Xuất Excel', exportCsv: 'Xuất CSV', exportReady: 'Chức năng xuất dữ liệu đã sẵn sàng.', noHistory: 'Bạn chưa có lịch sử đo nào', startFirst: 'Hãy bắt đầu đo nhịp tim ngay.',
+    detailTitle: 'Chi tiết kết quả', note: 'Ghi chú', activity: 'Hoàn cảnh đo', duration: 'Thời gian đo', confidence: 'Độ tin cậy', reminderTitle: 'Nhắc nhở đo nhịp tim', reminderBig: 'Đã đến lúc kiểm tra nhịp tim của bạn!', reminderSub: 'Tạo lịch nhắc linh hoạt để đo đều đặn mỗi ngày.', dailyReminder: 'Nhắc mỗi ngày lúc 09:00', reminderQuickToggle: 'Bật nhanh nhắc nhở', enableReminder: 'Bật nhắc nhở', reminderSchedule: 'Lịch nhắc', startTime: 'Bắt đầu từ', timesPerDay: 'Số lần mỗi ngày', intervalHours: 'Cách nhau', repeatDaily: 'Lặp lại hằng ngày', nextReminderTimes: 'Giờ sẽ nhắc', times: 'lần', hours: 'giờ', repeatDailyShort: 'hằng ngày', onceShort: 'một lần', reminderNotificationTitle: 'Đã đến giờ đo nhịp tim', reminderNotificationBody: 'Mở app và đo nhanh để theo dõi sức khỏe tim mạch.', measureNow: 'Đo ngay', exportPdf: 'Xuất PDF', exportExcel: 'Xuất Excel', exportCsv: 'Xuất CSV', exportReady: 'Chức năng xuất dữ liệu đã sẵn sàng.', noHistory: 'Bạn chưa có lịch sử đo nào', startFirst: 'Hãy bắt đầu đo nhịp tim ngay.',
     yourResult: 'Kết quả', status: 'Trạng thái', resting: 'Nghỉ ngơi', afterWorkout: 'Sau tập', sitting: 'Đang ngồi', active: 'Vận động', notePlaceholder: 'Nhập ghi chú của bạn', measureAgain: 'Đo lại', continue: 'Tiếp tục', startNow: 'Bắt đầu ngay', later: 'Để sau',
     onboardHeartTitle: 'Theo dõi nhịp tim của bạn', onboardHeartText: 'Đo nhịp tim nhanh chóng, chính xác bằng camera điện thoại.', onboardPrivacyTitle: 'An toàn & Bảo mật', onboardPrivacyText: 'Dữ liệu được lưu trên máy của bạn và không chia sẻ với bên thứ ba.', onboardTrackTitle: 'Lưu trữ & Theo dõi', onboardTrackText: 'Xem lịch sử, biểu đồ và theo dõi sức khỏe tim mạch theo thời gian.', onboardStartTitle: 'Sẵn sàng bắt đầu', onboardStartText: 'Hãy đảm bảo bạn ở nơi đủ sáng và giữ tay ổn định khi đo.',
     normal: 'Bình thường', low: 'Thấp', high: 'Cao', medium: 'Trung bình', good: 'Tốt', watch: 'Cần theo dõi', waitingSignal: 'Đang chờ tín hiệu', levelUpper: 'MỨC',
@@ -1529,7 +1701,7 @@ const dictionary = {
     historyTitle: 'Measurement History', day: 'Day', week: 'Week', month: 'Month', emptyHistory: 'Empty history', demoHistoryHint: 'No real data yet. The list below is sample data for preview.', home: 'Home', history: 'History', stats: 'Stats',
     average: 'Average', highest: 'Highest', lowest: 'Lowest', heartZones: 'Heart zones', lowZone: 'Low (<60)', normalZone: 'Normal (60-100)', highZone: 'High (>100)',
     guideTitle: 'Measurement Guide', guide1Title: 'Place finger', guide1Text: 'Cover the camera and flash with your fingertip.', guide2Title: 'Keep still', guide2Text: 'Hold steady for 15-30 seconds for a better result.', guide3Title: 'Wait for result', guide3Text: 'The app analyzes your signal and shows the result.', gotItStart: 'Got it, start', fingerInstruction: 'Cover the camera and flash with your finger', fingerHint: 'Keep still and do not press too hard.',
-    detailTitle: 'Result details', note: 'Note', activity: 'Activity', duration: 'Duration', confidence: 'Confidence', reminderTitle: 'Heart rate reminder', reminderBig: 'Time to check your heart rate!', reminderSub: 'Keep a healthy tracking habit.', dailyReminder: 'Daily reminder at 09:00', measureNow: 'Measure now', exportPdf: 'Export PDF', exportExcel: 'Export Excel', exportCsv: 'Export CSV', exportReady: 'Data export is ready.', noHistory: 'You have no measurement history', startFirst: 'Start measuring now.',
+    detailTitle: 'Result details', note: 'Note', activity: 'Activity', duration: 'Duration', confidence: 'Confidence', reminderTitle: 'Heart rate reminder', reminderBig: 'Time to check your heart rate!', reminderSub: 'Create a flexible reminder schedule for daily tracking.', dailyReminder: 'Daily reminder at 09:00', reminderQuickToggle: 'Quick reminder toggle', enableReminder: 'Enable reminders', reminderSchedule: 'Reminder schedule', startTime: 'Start at', timesPerDay: 'Times per day', intervalHours: 'Every', repeatDaily: 'Repeat daily', nextReminderTimes: 'Reminder times', times: 'times', hours: 'hours', repeatDailyShort: 'daily', onceShort: 'once', reminderNotificationTitle: 'Time to measure heart rate', reminderNotificationBody: 'Open the app for a quick heart health check.', measureNow: 'Measure now', exportPdf: 'Export PDF', exportExcel: 'Export Excel', exportCsv: 'Export CSV', exportReady: 'Data export is ready.', noHistory: 'You have no measurement history', startFirst: 'Start measuring now.',
     yourResult: 'Your result', status: 'Status', resting: 'Resting', afterWorkout: 'After workout', sitting: 'Sitting', active: 'Active', notePlaceholder: 'Enter your note', measureAgain: 'Measure again', continue: 'Continue', startNow: 'Start now', later: 'Later',
     onboardHeartTitle: 'Track your heart rate', onboardHeartText: 'Measure your heart rate quickly using the phone camera.', onboardPrivacyTitle: 'Safe & Private', onboardPrivacyText: 'Your data stays on your phone and is not shared.', onboardTrackTitle: 'Store & Track', onboardTrackText: 'View history, charts, and long-term heart health.', onboardStartTitle: 'Ready to start', onboardStartText: 'Use good lighting and keep your finger steady.',
     normal: 'Normal', low: 'Low', high: 'High', medium: 'Medium', good: 'Good', watch: 'Watch', waitingSignal: 'Waiting for signal', levelUpper: 'LEVEL',
@@ -1750,6 +1922,107 @@ function safeJson(value: unknown) {
   } catch {
     return String(value);
   }
+}
+
+function parseReminderConfig(value: string | null): ReminderConfig {
+  // Parse cấu hình cũ/mới từ AsyncStorage, lỗi dữ liệu thì quay về mặc định an toàn.
+  if (!value) return defaultReminderConfig;
+  try {
+    return sanitizeReminderConfig({ ...defaultReminderConfig, ...JSON.parse(value) });
+  } catch {
+    return defaultReminderConfig;
+  }
+}
+
+function sanitizeReminderConfig(value: ReminderConfig): ReminderConfig {
+  // Chặn giá trị ngoài biên để native notification không nhận trigger sai.
+  return {
+    enabled: Boolean(value.enabled),
+    startHour: clampInt(value.startHour, 0, 23),
+    startMinute: Math.round(clampInt(value.startMinute, 0, 59) / 15) * 15 % 60,
+    timesPerDay: clampInt(value.timesPerDay, 1, 8),
+    intervalHours: clampInt(value.intervalHours, 1, 12),
+    repeatDaily: Boolean(value.repeatDaily),
+  };
+}
+
+async function scheduleReminderNotifications(config: ReminderConfig, language: Language) {
+  // App chỉ dùng local notification cho lịch đo, nên schedule lại toàn bộ khi người dùng đổi cấu hình.
+  await Notifications.cancelAllScheduledNotificationsAsync();
+  if (!config.enabled) return;
+  const permission = await Notifications.getPermissionsAsync();
+  const granted = permission.granted || permission.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL;
+  const finalPermission = granted ? permission : await Notifications.requestPermissionsAsync();
+  if (!finalPermission.granted && finalPermission.ios?.status !== Notifications.IosAuthorizationStatus.PROVISIONAL) {
+    return;
+  }
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync(REMINDER_CHANNEL_ID, {
+      name: language === 'vi' ? 'Nhắc đo nhịp tim' : 'Heart rate reminders',
+      importance: Notifications.AndroidImportance.DEFAULT,
+      sound: 'default',
+    });
+  }
+  const times = reminderTimeParts(config);
+  await Promise.all(times.map((time, index) => Notifications.scheduleNotificationAsync({
+    content: {
+      title: tx(language, 'reminderNotificationTitle'),
+      body: tx(language, 'reminderNotificationBody'),
+      sound: 'default',
+      data: { kind: 'heart-rate-reminder', index },
+    },
+    trigger: config.repeatDaily
+      ? {
+          type: Notifications.SchedulableTriggerInputTypes.DAILY,
+          hour: time.hour,
+          minute: time.minute,
+          channelId: REMINDER_CHANNEL_ID,
+        }
+      : {
+          type: Notifications.SchedulableTriggerInputTypes.DATE,
+          date: nextReminderDate(time.hour, time.minute),
+          channelId: REMINDER_CHANNEL_ID,
+        },
+  })));
+}
+
+function reminderTimeParts(config: ReminderConfig) {
+  // Tạo danh sách giờ trong ngày từ giờ bắt đầu + khoảng cách giữa các lần nhắc.
+  return Array.from({ length: config.timesPerDay }).map((_, index) => {
+    const totalMinutes = config.startHour * 60 + config.startMinute + index * config.intervalHours * 60;
+    const minuteOfDay = ((totalMinutes % 1440) + 1440) % 1440;
+    return { hour: Math.floor(minuteOfDay / 60), minute: minuteOfDay % 60 };
+  });
+}
+
+function reminderTimes(config: ReminderConfig) {
+  // Hiển thị giờ nhắc đã tính, ví dụ 09:00 13:00 17:00.
+  return reminderTimeParts(config).map((time) => `${twoDigits(time.hour)}:${twoDigits(time.minute)}`);
+}
+
+function reminderSummary(config: ReminderConfig, language: Language) {
+  // Tóm tắt ngắn dùng chung ở Home và Settings.
+  if (!config.enabled) return tx(language, 'off');
+  const times = reminderTimes(config).join(', ');
+  const repeat = config.repeatDaily ? tx(language, 'repeatDailyShort') : tx(language, 'onceShort');
+  return `${times} · ${repeat}`;
+}
+
+function nextReminderDate(hour: number, minute: number) {
+  // Trigger một lần sẽ chọn mốc kế tiếp trong hôm nay, quá giờ thì chuyển sang ngày mai.
+  const next = new Date();
+  next.setHours(hour, minute, 0, 0);
+  if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
+  return next;
+}
+
+function twoDigits(value: number) {
+  return String(value).padStart(2, '0');
+}
+
+function clampInt(value: number, min: number, max: number) {
+  // Ép số nguyên trong khoảng cho các stepper.
+  return Math.max(min, Math.min(max, Math.round(Number.isFinite(value) ? value : min)));
 }
 
 const styles = StyleSheet.create({
@@ -2054,6 +2327,45 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 15,
     marginTop: 3,
+  },
+  homeReminderCard: {
+    alignItems: 'center',
+    backgroundColor: '#0b2b45',
+    borderColor: '#24445b',
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    minHeight: 62,
+    paddingHorizontal: 12,
+  },
+  homeReminderIcon: {
+    alignItems: 'center',
+    backgroundColor: '#ffedf2',
+    borderRadius: 18,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  homeReminderIconText: {
+    color: rose,
+    fontSize: 19,
+    fontWeight: '900',
+  },
+  homeReminderTextWrap: {
+    flex: 1,
+  },
+  homeReminderTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  homeReminderSub: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 16,
+    marginTop: 2,
   },
   spo2Disclaimer: {
     color: '#cbd5e1',
@@ -2528,10 +2840,107 @@ const styles = StyleSheet.create({
     color: muted,
     fontSize: 13,
     fontWeight: '700',
+    maxWidth: 180,
+    textAlign: 'right',
   },
   chevron: {
     color: '#a6afbb',
     fontSize: 24,
+  },
+  reminderCard: {
+    backgroundColor: '#ffffff',
+    borderColor: line,
+    borderRadius: 16,
+    borderWidth: 1,
+    gap: 12,
+    padding: 14,
+  },
+  reminderCardTitle: {
+    color: ink,
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  stepperRow: {
+    alignItems: 'center',
+    backgroundColor: '#f8fafc',
+    borderColor: '#edf1f5',
+    borderRadius: 13,
+    borderWidth: 1,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 58,
+    paddingHorizontal: 12,
+  },
+  stepperLabel: {
+    color: ink,
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  stepperControls: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  stepperButton: {
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    borderColor: line,
+    borderRadius: 10,
+    borderWidth: 1,
+    height: 34,
+    justifyContent: 'center',
+    width: 34,
+  },
+  stepperButtonText: {
+    color: rose,
+    fontSize: 20,
+    fontWeight: '900',
+    lineHeight: 22,
+  },
+  stepperValue: {
+    color: ink,
+    fontSize: 15,
+    fontVariant: ['tabular-nums'],
+    fontWeight: '900',
+    minWidth: 58,
+    textAlign: 'center',
+  },
+  timeStepperGrid: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 5,
+  },
+  timeColon: {
+    color: muted,
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  reminderTimesBox: {
+    backgroundColor: '#fff7f9',
+    borderColor: '#ffd3de',
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 14,
+  },
+  reminderTimesTitle: {
+    color: roseDark,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  reminderTimesText: {
+    color: ink,
+    fontSize: 18,
+    fontVariant: ['tabular-nums'],
+    fontWeight: '900',
+    marginTop: 8,
+  },
+  reminderHelpText: {
+    color: muted,
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 17,
+    marginTop: 6,
   },
   secondaryButton: {
     alignItems: 'center',
