@@ -32,8 +32,6 @@ type Measurement = {
   respiration?: number;
   hrv?: number;
   stress?: string;
-  temperature?: number;
-  bloodPressure?: string;
   quality: number;
   durationMs: number;
   createdAt: string;
@@ -41,7 +39,7 @@ type Measurement = {
   note?: string;
 };
 
-type MetricKey = 'heartRate' | 'spo2' | 'respiration' | 'hrv' | 'stress' | 'temperature' | 'bloodPressure';
+type MetricKey = 'heartRate' | 'spo2' | 'respiration' | 'hrv' | 'stress';
 type TabKey = 'measure' | 'history' | 'stats' | 'settings';
 type RouteKey = 'main' | 'guide' | 'finger' | 'result' | 'detail' | 'reminder' | 'export' | 'empty-history';
 
@@ -64,8 +62,6 @@ const healthMetrics: { key: MetricKey; label: string; short: string; unit: strin
   { key: 'respiration', label: 'Nhịp thở', short: 'Nhịp thở', unit: 'RPM', icon: '♒', color: '#38bdf8', description: 'Theo dõi tốc độ thở từ nhịp biến thiên.' },
   { key: 'hrv', label: 'HRV', short: 'HRV', unit: 'ms', icon: '↯', color: '#22c55e', description: 'Độ biến thiên nhịp tim tham khảo.' },
   { key: 'stress', label: 'Căng thẳng', short: 'Căng thẳng', unit: '', icon: '☺', color: '#f59e0b', description: 'Đánh giá căng thẳng từ nhịp tim.' },
-  { key: 'temperature', label: 'Nhiệt độ cơ thể', short: 'Nhiệt độ', unit: '°C', icon: '♨', color: '#8b5cf6', description: 'Ước tính nhiệt độ cơ thể.' },
-  { key: 'bloodPressure', label: 'Huyết áp', short: 'Huyết áp', unit: 'mmHg', icon: '♦', color: '#14b8a6', description: 'Ước tính xu hướng huyết áp.' },
 ];
 
 const initialUpdate: PpgUpdatePayload = {
@@ -1264,25 +1260,19 @@ function deriveHealthValues(bpm: number, quality: number, measuredSpO2?: number,
   const respiration = measuredRespiration ?? Math.max(12, Math.min(22, Math.round(12 + bpm / 18)));
   const hrv = Math.max(25, Math.min(86, Math.round(88 - bpm * 0.55 + qualityBonus * 4)));
   const stress = bpm > 100 || hrv < 38 ? 'Cao' : bpm > 86 || hrv < 50 ? 'Trung bình' : 'Thấp';
-  const temperature = Math.round((36.2 + Math.max(0, bpm - 72) * 0.006 + (quality < 0.7 ? 0.1 : 0)) * 10) / 10;
-  const systolic = Math.max(105, Math.min(145, Math.round(108 + (bpm - 65) * 0.42)));
-  const diastolic = Math.max(65, Math.min(95, Math.round(68 + (bpm - 65) * 0.18)));
-  return { spO2, respiration, hrv, stress, temperature, bloodPressure: `${systolic}/${diastolic}` };
+  return { spO2, respiration, hrv, stress };
 }
 
 function valueForMetric(metric: MetricKey, bpm: number, derived: ReturnType<typeof deriveHealthValues>) {
   if (metric === 'spo2') return derived.spO2 ?? 0;
   if (metric === 'respiration') return derived.respiration ?? 0;
   if (metric === 'hrv') return derived.hrv;
-  if (metric === 'temperature') return derived.temperature;
-  if (metric === 'bloodPressure') return Number(derived.bloodPressure.split('/')[0]);
   if (metric === 'stress') return derived.stress === 'Cao' ? 3 : derived.stress === 'Trung bình' ? 2 : 1;
   return bpm;
 }
 
 function formatMetricValue(item: Measurement) {
   if (item.metric === 'stress') return item.stress ?? 'Thấp';
-  if (item.metric === 'bloodPressure') return `${item.bloodPressure ?? '120/80'} mmHg`;
   return `${item.value}${item.unit ? ` ${item.unit}` : ''}`;
 }
 
@@ -1291,8 +1281,6 @@ function statusForMeasurement(item: Measurement) {
   if (item.metric === 'respiration') return item.value >= 12 && item.value <= 20 ? 'Bình thường' : 'Cần theo dõi';
   if (item.metric === 'hrv') return item.value >= 50 ? 'Tốt' : item.value >= 35 ? 'Trung bình' : 'Thấp';
   if (item.metric === 'stress') return item.stress ?? 'Thấp';
-  if (item.metric === 'temperature') return item.value >= 36 && item.value <= 37.3 ? 'Bình thường' : 'Cần theo dõi';
-  if (item.metric === 'bloodPressure') return item.value < 130 ? 'Bình thường' : 'Cần theo dõi';
   return statusByBpm(item.bpm);
 }
 
