@@ -46,9 +46,11 @@ type TabKey = 'measure' | 'history' | 'stats' | 'settings';
 type RouteKey = 'main' | 'guide' | 'finger' | 'result' | 'detail' | 'reminder' | 'export' | 'empty-history';
 type DebugEntry = { at: string; code: string; data?: unknown };
 type HistoryPeriod = 'day' | 'week' | 'month';
+type Language = 'vi' | 'en';
 
 const STORAGE_KEY = 'donhiptim.measurements.v2';
 const CONSENT_KEY = 'donhiptim.consent.v1';
+const LANGUAGE_KEY = 'donhiptim.language.v1';
 const screenWidth = Dimensions.get('window').width;
 const dialSize = Math.min(screenWidth - 88, 280);
 const rose = '#f34f75';
@@ -104,6 +106,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [reminderOn, setReminderOn] = useState(false);
   const [themeLight, setThemeLight] = useState(true);
+  const [language, setLanguageState] = useState<Language>('vi');
   const [debugError, setDebugError] = useState<string | undefined>();
   const [debugLogs, setDebugLogs] = useState<DebugEntry[]>([]);
   const measurementsRef = useRef<Measurement[]>([]);
@@ -242,12 +245,14 @@ export default function App() {
   }, [history]);
 
   async function bootstrap() {
-    const [storedConsent, storedMeasurements, storedLogs] = await Promise.all([
+    const [storedConsent, storedMeasurements, storedLogs, storedLanguage] = await Promise.all([
       AsyncStorage.getItem(CONSENT_KEY),
       AsyncStorage.getItem(STORAGE_KEY),
       AsyncStorage.getItem(LOG_KEY),
+      AsyncStorage.getItem(LANGUAGE_KEY),
     ]);
     setAccepted(storedConsent === 'accepted');
+    if (storedLanguage === 'en' || storedLanguage === 'vi') setLanguageState(storedLanguage);
     const parsed = storedMeasurements ? JSON.parse(storedMeasurements).map(migrateMeasurement) : [];
     setMeasurements(parsed);
     measurementsRef.current = parsed;
@@ -259,6 +264,11 @@ export default function App() {
   async function finishOnboarding() {
     await AsyncStorage.setItem(CONSENT_KEY, 'accepted');
     setAccepted(true);
+  }
+
+  async function changeLanguage(value: Language) {
+    setLanguageState(value);
+    await AsyncStorage.setItem(LANGUAGE_KEY, value);
   }
 
   async function startMeasurement() {
@@ -471,7 +481,7 @@ export default function App() {
     return (
       <SafeAreaView style={styles.lightSafe}>
         <StatusBar style="dark" />
-        <Onboarding page={onboardPage} setPage={setOnboardPage} finish={finishOnboarding} />
+        <Onboarding page={onboardPage} setPage={setOnboardPage} finish={finishOnboarding} language={language} />
       </SafeAreaView>
     );
   }
@@ -482,6 +492,7 @@ export default function App() {
         <StatusBar style="dark" />
         <ResultScreen
           item={pendingResult}
+          language={language}
           values={signalHistory}
           noteText={noteText}
           setNoteText={setNoteText}
@@ -501,6 +512,7 @@ export default function App() {
         <StatusBar style="dark" />
         <RouteScreen
           route={route}
+          language={language}
           selected={selected}
           history={history}
           reminderOn={reminderOn}
@@ -530,6 +542,7 @@ export default function App() {
       {activeTab === 'measure' ? (
         <MeasureScreen
           update={update}
+          language={language}
           latest={latest}
           visibleBpm={visibleBpm}
           progress={progressValue}
@@ -545,15 +558,17 @@ export default function App() {
           debugError={debugError}
         />
       ) : activeTab === 'history' ? (
-        <HistoryScreen items={history} realCount={measurements.length} openDetail={openDetail} openEmpty={() => setRoute('empty-history')} />
+        <HistoryScreen items={history} realCount={measurements.length} openDetail={openDetail} openEmpty={() => setRoute('empty-history')} language={language} />
       ) : activeTab === 'stats' ? (
-        <StatsScreen items={history} stats={stats} />
+        <StatsScreen items={history} stats={stats} language={language} />
       ) : (
         <SettingsScreen
           reminderOn={reminderOn}
           setReminderOn={setReminderOn}
           themeLight={themeLight}
           setThemeLight={setThemeLight}
+          language={language}
+          setLanguage={(value) => void changeLanguage(value)}
           openGuide={() => setRoute('guide')}
           openReminder={() => setRoute('reminder')}
           openExport={() => setRoute('export')}
@@ -563,31 +578,31 @@ export default function App() {
           }}
         />
       )}
-      <BottomTabs active={activeTab} goTab={goTab} />
+      <BottomTabs active={activeTab} goTab={goTab} language={language} />
     </SafeAreaView>
   );
 }
 
-function Onboarding({ page, setPage, finish }: { page: number; setPage: (page: number) => void; finish: () => void }) {
+function Onboarding({ page, setPage, finish, language }: { page: number; setPage: (page: number) => void; finish: () => void; language: Language }) {
   const pages = [
     {
-      title: 'Theo dõi nhịp tim của bạn',
-      text: 'Đo nhịp tim nhanh chóng, chính xác bằng camera điện thoại.',
+      title: tx(language, 'onboardHeartTitle'),
+      text: tx(language, 'onboardHeartText'),
       art: <HeartArt />,
     },
     {
-      title: 'An toàn & Bảo mật',
-      text: 'Dữ liệu được lưu trên máy của bạn và không chia sẻ với bên thứ ba.',
+      title: tx(language, 'onboardPrivacyTitle'),
+      text: tx(language, 'onboardPrivacyText'),
       art: <ShieldArt />,
     },
     {
-      title: 'Lưu trữ & Theo dõi',
-      text: 'Xem lịch sử, biểu đồ và theo dõi sức khỏe tim mạch theo thời gian.',
+      title: tx(language, 'onboardTrackTitle'),
+      text: tx(language, 'onboardTrackText'),
       art: <ChartCardArt />,
     },
     {
-      title: 'Sẵn sàng bắt đầu',
-      text: 'Hãy đảm bảo bạn ở nơi đủ sáng và giữ tay ổn định khi đo.',
+      title: tx(language, 'onboardStartTitle'),
+      text: tx(language, 'onboardStartText'),
       art: <FingerPhoneArt />,
     },
   ];
@@ -599,11 +614,11 @@ function Onboarding({ page, setPage, finish }: { page: number; setPage: (page: n
       <Text style={styles.onboardTitle}>{item.title}</Text>
       <Text style={styles.onboardText}>{item.text}</Text>
       <Pressable style={styles.primaryButton} onPress={page === pages.length - 1 ? finish : () => setPage(page + 1)}>
-        <Text style={styles.primaryButtonText}>{page === pages.length - 1 ? 'Bắt đầu ngay' : 'Tiếp tục'}</Text>
+        <Text style={styles.primaryButtonText}>{page === pages.length - 1 ? tx(language, 'startNow') : tx(language, 'continue')}</Text>
       </Pressable>
       {page === pages.length - 1 ? (
         <Pressable onPress={finish}>
-          <Text style={styles.skipText}>Để sau</Text>
+          <Text style={styles.skipText}>{tx(language, 'later')}</Text>
         </Pressable>
       ) : null}
       <View style={styles.dots}>
@@ -617,6 +632,7 @@ function Onboarding({ page, setPage, finish }: { page: number; setPage: (page: n
 
 function MeasureScreen({
   update,
+  language,
   latest,
   visibleBpm,
   progress,
@@ -632,6 +648,7 @@ function MeasureScreen({
   debugError,
 }: {
   update: PpgUpdatePayload;
+  language: Language;
   latest?: Measurement;
   visibleBpm?: number;
   progress: number;
@@ -651,10 +668,11 @@ function MeasureScreen({
   const metric = healthMetrics.find((item) => item.key === selectedMetric) ?? healthMetrics[0];
   const liveMetricValue = visibleBpm ? displayValueForMetricFromBpm(selectedMetric, visibleBpm, update.quality) : undefined;
   const measureValueText = failed ? '--' : liveMetricValue ? String(liveMetricValue).padStart(selectedMetric === 'heartRate' ? 2 : 0, '0') : isMeasuring ? '--' : '00';
-  const measureUnitText = failed ? 'ĐO LẠI' : isMeasuring && !liveMetricValue ? `${Math.max(0, 30 - Math.floor(update.elapsedMs / 1000))} giây` : displayUnitForMetric(selectedMetric);
+  const measureUnitText = failed ? tx(language, 'retryUpper') : isMeasuring && !liveMetricValue ? `${Math.max(0, 30 - Math.floor(update.elapsedMs / 1000))} ${tx(language, 'seconds')}` : displayUnitForMetric(selectedMetric, language);
   const heartScale = useRef(new Animated.Value(1)).current;
-  const label = failed ? 'Tín hiệu không tốt' : complete ? 'Kết quả đo' : isMeasuring ? `Đang đo ${metric.label.toLowerCase()}` : 'Xin chào!';
-  const sub = failed ? 'Đặt ngón tay che kín camera và giữ yên.' : complete ? statusByBpm(visibleBpm) : isMeasuring ? 'Giữ yên tay, đừng di chuyển.' : 'Bấm vòng tròn để bắt đầu đo.';
+  const metricName = metricNameFor(selectedMetric, language);
+  const label = failed ? tx(language, 'badSignal') : complete ? tx(language, 'result') : isMeasuring ? `${tx(language, 'measuring')} ${metricName.toLowerCase()}` : tx(language, 'hello');
+  const sub = failed ? tx(language, 'coverCamera') : complete ? statusByBpm(visibleBpm, language) : isMeasuring ? tx(language, 'holdStill') : tx(language, 'tapStart');
 
   useEffect(() => {
     if (!isMeasuring || !visibleBpm) return;
@@ -668,8 +686,8 @@ function MeasureScreen({
     <View style={styles.measurePage}>
       <View style={styles.darkHeader}>
         <View>
-          <Text style={styles.brand}>APP ĐO NHỊP TIM</Text>
-          <Text style={styles.brandSub}>Theo dõi sức khỏe tim mạch mỗi ngày</Text>
+          <Text style={styles.brand}>{tx(language, 'appTitle')}</Text>
+          <Text style={styles.brandSub}>{tx(language, 'appSub')}</Text>
         </View>
         <Pressable style={styles.roundIcon} onPress={openGuide}>
           <Text style={styles.roundIconText}>?</Text>
@@ -677,15 +695,15 @@ function MeasureScreen({
       </View>
 
       <View style={styles.measureTabs}>
-        <Pressable onPress={openGuide}><Text style={styles.measureTab}>TRỢ GIÚP</Text></Pressable>
-        <Text style={[styles.measureTab, styles.measureTabActive]}>ĐO</Text>
-        <Pressable onPress={openHistory}><Text style={styles.measureTab}>LỊCH SỬ</Text></Pressable>
+        <Pressable onPress={openGuide}><Text style={styles.measureTab}>{tx(language, 'helpUpper')}</Text></Pressable>
+        <Text style={[styles.measureTab, styles.measureTabActive]}>{tx(language, 'measureUpper')}</Text>
+        <Pressable onPress={openHistory}><Text style={styles.measureTab}>{tx(language, 'historyUpper')}</Text></Pressable>
       </View>
 
       <View style={styles.measureBody}>
         {!isMeasuring && !failed && !complete ? (
           <View style={styles.metricPickerPanel}>
-            <Text style={styles.metricPickerTitle}>Chọn chỉ số bạn muốn đo</Text>
+            <Text style={styles.metricPickerTitle}>{tx(language, 'chooseMetric')}</Text>
             {healthMetrics.map((item) => (
               <Pressable
                 key={item.key}
@@ -696,14 +714,14 @@ function MeasureScreen({
                   <Text style={[styles.metricPickIconText, { color: item.color }]}>{item.icon}</Text>
                 </View>
                 <View style={styles.metricPickContent}>
-                  <Text style={styles.metricPickTitle}>{item.label}</Text>
-                  <Text style={styles.metricPickDescription}>{item.description}</Text>
+                  <Text style={styles.metricPickTitle}>{metricNameFor(item.key, language)}</Text>
+                  <Text style={styles.metricPickDescription}>{metricDescriptionFor(item.key, language)}</Text>
                 </View>
                 <Text style={styles.chevron}>›</Text>
               </Pressable>
             ))}
             <Pressable style={styles.primaryButton} onPress={toggleMeasurement}>
-              <Text style={styles.primaryButtonText}>Bắt đầu đo {metric.label.toLowerCase()}</Text>
+              <Text style={styles.primaryButtonText}>{tx(language, 'startMeasure')} {metricName.toLowerCase()}</Text>
             </Pressable>
             {selectedMetric === 'spo2' ? <Text style={styles.spo2Disclaimer}>Estimated SpO2 - For wellness purposes only.</Text> : null}
           </View>
@@ -730,17 +748,17 @@ function MeasureScreen({
         <Text style={styles.percentText}>{Math.round(progress * 100)}%</Text>
         <View style={styles.measureActions}>
           <Pressable style={styles.darkGhostButton} onPress={openFinger}>
-            <Text style={styles.darkGhostText}>Vị trí đặt tay</Text>
+            <Text style={styles.darkGhostText}>{tx(language, 'fingerPosition')}</Text>
           </Pressable>
           <Pressable style={styles.primaryButtonSmall} onPress={toggleMeasurement}>
-            <Text style={styles.primaryButtonText}>{isMeasuring ? 'Dừng đo' : failed ? 'Thử lại' : 'Bắt đầu đo'}</Text>
+            <Text style={styles.primaryButtonText}>{isMeasuring ? tx(language, 'stop') : failed ? tx(language, 'retry') : tx(language, 'startMeasure')}</Text>
           </Pressable>
         </View>
-        <Text style={styles.previousDark}>Lịch sử kết quả nằm trong tab Lịch sử</Text>
+        <Text style={styles.previousDark}>{tx(language, 'historyHint')}</Text>
         {DEBUG_MODE ? (
           <View style={styles.debugBox}>
             <Text style={styles.debugTitle}>DEBUG ERROR</Text>
-            <Text style={styles.debugText}>{debugError ?? 'Chụp màn hình để tự gửi log TXT.'}</Text>
+            <Text style={styles.debugText}>{debugError ?? tx(language, 'screenshotLog')}</Text>
           </View>
         ) : null}
           </>
@@ -755,70 +773,72 @@ function HistoryScreen({
   realCount,
   openDetail,
   openEmpty,
+  language,
 }: {
   items: Measurement[];
   realCount: number;
   openDetail: (item: Measurement) => void;
   openEmpty: () => void;
+  language: Language;
 }) {
   const [period, setPeriod] = useState<HistoryPeriod>('day');
-  const groups = groupHistory(items, period);
+  const groups = groupHistory(items, period, language);
 
   return (
-    <ScreenScaffold title="Lịch sử đo">
+    <ScreenScaffold title={tx(language, 'historyTitle')}>
       <Segmented
-        labels={['Ngày', 'Tuần', 'Tháng']}
+        labels={[tx(language, 'day'), tx(language, 'week'), tx(language, 'month')]}
         active={period === 'day' ? 0 : period === 'week' ? 1 : 2}
         onChange={(index) => setPeriod(index === 0 ? 'day' : index === 1 ? 'week' : 'month')}
       />
       {realCount === 0 ? (
         <Pressable style={styles.emptyHint} onPress={openEmpty}>
           <ClipboardArt />
-          <Text style={styles.emptyTitle}>Lịch sử trống</Text>
-          <Text style={styles.emptyText}>Bạn chưa có dữ liệu thật. Danh sách bên dưới là dữ liệu mẫu để xem giao diện.</Text>
+          <Text style={styles.emptyTitle}>{tx(language, 'emptyHistory')}</Text>
+          <Text style={styles.emptyText}>{tx(language, 'demoHistoryHint')}</Text>
         </Pressable>
       ) : null}
       {groups.map((group) => (
         <View key={group.title}>
           <Text style={styles.sectionLabel}>{group.title}</Text>
-          {group.items.map((item) => <HistoryRow key={item.id} item={item} openDetail={openDetail} />)}
+          {group.items.map((item) => <HistoryRow key={item.id} item={item} openDetail={openDetail} language={language} />)}
         </View>
       ))}
     </ScreenScaffold>
   );
 }
 
-function HistoryRow({ item, openDetail }: { item: Measurement; openDetail: (item: Measurement) => void }) {
+function HistoryRow({ item, openDetail, language }: { item: Measurement; openDetail: (item: Measurement) => void; language: Language }) {
   return (
     <Pressable style={styles.historyRow} onPress={() => openDetail(item)}>
       <Text style={styles.historyTime}>{timeOnly(item.createdAt)}</Text>
       <Text style={styles.historyHeart}>♥</Text>
       <View style={styles.historyMain}>
-        <Text style={styles.historyBpm}>{item.label}: {formatMetricValue(item)}</Text>
+        <Text style={styles.historyBpm}>{metricNameFor(item.metric, language)}: {formatMetricValue(item, language)}</Text>
         {item.activity || item.note ? <Text style={styles.historyNote} numberOfLines={1}>{[item.activity, item.note].filter(Boolean).join(' - ')}</Text> : null}
       </View>
-      <Text style={[styles.historyStatus, metricIsHigh(item) && styles.historyStatusHigh]}>{statusForMeasurement(item)}</Text>
+      <Text style={[styles.historyStatus, metricIsHigh(item) && styles.historyStatusHigh]}>{statusForMeasurement(item, language)}</Text>
     </Pressable>
   );
 }
 
-function StatsScreen({ items, stats }: { items: Measurement[]; stats: { avg: number; max: number; min: number; normal: number; high: number; low: number } }) {
+function StatsScreen({ items, stats, language }: { items: Measurement[]; stats: { avg: number; max: number; min: number; normal: number; high: number; low: number }; language: Language }) {
   return (
-    <ScreenScaffold title="Thống kê">
-      <Segmented labels={['Ngày', 'Tuần', 'Tháng']} active={1} />
+    <ScreenScaffold title={tx(language, 'stats')}>
+      <Segmented labels={[tx(language, 'day'), tx(language, 'week'), tx(language, 'month')]} active={1} />
       <View style={styles.summaryGrid}>
-        <Metric label="Trung bình" value={`${stats.avg}`} suffix="BPM" />
-        <Metric label="Cao nhất" value={`${stats.max}`} suffix="BPM" accent />
-        <Metric label="Thấp nhất" value={`${stats.min}`} suffix="BPM" />
+        <Metric label={tx(language, 'average')} value={`${stats.avg}`} suffix="BPM" />
+        <Metric label={tx(language, 'highest')} value={`${stats.max}`} suffix="BPM" accent />
+        <Metric label={tx(language, 'lowest')} value={`${stats.min}`} suffix="BPM" />
       </View>
       <ChartLine items={items} />
-      <Text style={styles.sectionLabel}>Vùng nhịp tim</Text>
+      <Text style={styles.sectionLabel}>{tx(language, 'heartZones')}</Text>
       <View style={styles.card}>
         <Donut low={stats.low} normal={stats.normal} high={stats.high} />
         <View style={styles.legend}>
-          <Legend color="#2f80ed" label="Thấp (<60)" value={`${stats.low}`} />
-          <Legend color="#22c55e" label="Bình thường (60-100)" value={`${stats.normal}`} />
-          <Legend color={rose} label="Cao (>100)" value={`${stats.high}`} />
+          <Legend color="#2f80ed" label={tx(language, 'lowZone')} value={`${stats.low}`} />
+          <Legend color="#22c55e" label={tx(language, 'normalZone')} value={`${stats.normal}`} />
+          <Legend color={rose} label={tx(language, 'highZone')} value={`${stats.high}`} />
         </View>
       </View>
       <Text style={styles.sectionLabel}>Phân bố nhịp tim</Text>
@@ -832,6 +852,8 @@ function SettingsScreen({
   setReminderOn,
   themeLight,
   setThemeLight,
+  language,
+  setLanguage,
   openGuide,
   openReminder,
   openExport,
@@ -841,27 +863,29 @@ function SettingsScreen({
   setReminderOn: (value: boolean) => void;
   themeLight: boolean;
   setThemeLight: (value: boolean) => void;
+  language: Language;
+  setLanguage: (value: Language) => void;
   openGuide: () => void;
   openReminder: () => void;
   openExport: () => void;
   resetOnboarding: () => void;
 }) {
   return (
-    <ScreenScaffold title="Cài đặt">
-      <SettingsRow icon="♡" title="Đơn vị nhịp tim" value="BPM" />
-      <SettingsRow icon="◴" title="Nhắc nhở đo nhịp tim" value={reminderOn ? 'Bật' : 'Tắt'} onPress={openReminder} />
-      <SettingsRow icon="⏰" title="Thời gian nhắc" value="09:00" />
+    <ScreenScaffold title={tx(language, 'settings')}>
+      <SettingsRow icon="♡" title={tx(language, 'heartUnit')} value="BPM" />
+      <SettingsRow icon="◴" title={tx(language, 'reminder')} value={reminderOn ? tx(language, 'on') : tx(language, 'off')} onPress={openReminder} />
+      <SettingsRow icon="⏰" title={tx(language, 'reminderTime')} value="09:00" />
       <View style={styles.settingSwitchRow}>
-        <View style={styles.settingLeft}><Text style={styles.settingIcon}>☼</Text><Text style={styles.settingTitle}>Chủ đề sáng</Text></View>
+        <View style={styles.settingLeft}><Text style={styles.settingIcon}>☼</Text><Text style={styles.settingTitle}>{tx(language, 'lightTheme')}</Text></View>
         <Switch value={themeLight} onValueChange={setThemeLight} trackColor={{ true: '#f8b6c4' }} thumbColor={themeLight ? rose : '#ffffff'} />
       </View>
-      <SettingsRow icon="🌐" title="Ngôn ngữ" value="Tiếng Việt" />
-      <SettingsRow icon="?" title="Hướng dẫn sử dụng" onPress={openGuide} />
-      <SettingsRow icon="⇪" title="Xuất dữ liệu" onPress={openExport} />
-      <SettingsRow icon="▣" title="Chính sách bảo mật" value="Đã lưu cục bộ" />
-      <SettingsRow icon="i" title="Giới thiệu ứng dụng" value="Phiên bản 1.0.0" />
+      <SettingsRow icon="🌐" title={tx(language, 'language')} value={language === 'vi' ? 'Tiếng Việt' : 'English'} onPress={() => setLanguage(language === 'vi' ? 'en' : 'vi')} />
+      <SettingsRow icon="?" title={tx(language, 'guide')} onPress={openGuide} />
+      <SettingsRow icon="⇪" title={tx(language, 'exportData')} onPress={openExport} />
+      <SettingsRow icon="▣" title={tx(language, 'privacy')} value={tx(language, 'localOnly')} />
+      <SettingsRow icon="i" title={tx(language, 'about')} value={tx(language, 'version')} />
       <Pressable style={styles.secondaryButton} onPress={resetOnboarding}>
-        <Text style={styles.secondaryText}>Xem lại onboarding</Text>
+        <Text style={styles.secondaryText}>{tx(language, 'replayOnboarding')}</Text>
       </Pressable>
     </ScreenScaffold>
   );
@@ -869,6 +893,7 @@ function SettingsScreen({
 
 function RouteScreen({
   route,
+  language,
   selected,
   history,
   reminderOn,
@@ -885,6 +910,7 @@ function RouteScreen({
   start,
 }: {
   route: RouteKey;
+  language: Language;
   selected?: Measurement;
   history: Measurement[];
   reminderOn: boolean;
@@ -902,12 +928,12 @@ function RouteScreen({
 }) {
   if (route === 'guide') {
     return (
-      <ScreenScaffold title="Hướng dẫn đo" back={back}>
-        <GuideStep number="1" title="Đặt ngón tay" text="Đặt đầu ngón tay che kín camera và đèn flash." />
-        <GuideStep number="2" title="Giữ yên tay" text="Giữ tay ổn định trong 15-30 giây để có kết quả chính xác." />
-        <GuideStep number="3" title="Chờ kết quả" text="Ứng dụng sẽ phân tích và hiển thị nhịp tim của bạn." />
+      <ScreenScaffold title={tx(language, 'guideTitle')} back={back}>
+        <GuideStep number="1" title={tx(language, 'guide1Title')} text={tx(language, 'guide1Text')} />
+        <GuideStep number="2" title={tx(language, 'guide2Title')} text={tx(language, 'guide2Text')} />
+        <GuideStep number="3" title={tx(language, 'guide3Title')} text={tx(language, 'guide3Text')} />
         <Pressable style={styles.primaryButton} onPress={start}>
-          <Text style={styles.primaryButtonText}>Hiểu rồi, bắt đầu đo</Text>
+          <Text style={styles.primaryButtonText}>{tx(language, 'gotItStart')}</Text>
         </Pressable>
       </ScreenScaffold>
     );
@@ -915,12 +941,12 @@ function RouteScreen({
 
   if (route === 'finger') {
     return (
-      <ScreenScaffold title="Vị trí đặt ngón tay" back={back}>
+      <ScreenScaffold title={tx(language, 'fingerPosition')} back={back}>
         <FingerPhoneArt large />
-        <Text style={styles.bigInstruction}>Đặt ngón tay che kín camera và đèn flash</Text>
-        <Text style={styles.centerMuted}>Giữ yên tay và không ấn quá mạnh để tín hiệu ổn định hơn.</Text>
+        <Text style={styles.bigInstruction}>{tx(language, 'fingerInstruction')}</Text>
+        <Text style={styles.centerMuted}>{tx(language, 'fingerHint')}</Text>
         <Pressable style={styles.primaryButton} onPress={start}>
-          <Text style={styles.primaryButtonText}>Bắt đầu đo</Text>
+          <Text style={styles.primaryButtonText}>{tx(language, 'startMeasure')}</Text>
         </Pressable>
       </ScreenScaffold>
     );
@@ -931,6 +957,7 @@ function RouteScreen({
     return (
       <ResultScreen
         item={item}
+        language={language}
         values={values}
         noteText={noteText}
         setNoteText={setNoteText}
@@ -946,28 +973,28 @@ function RouteScreen({
   if (route === 'detail') {
     const item = selected ?? history[0];
     return (
-      <ScreenScaffold title="Chi tiết kết quả" back={back}>
+      <ScreenScaffold title={tx(language, 'detailTitle')} back={back}>
         <Text style={styles.detailDate}>{dateOnly(item.createdAt)} - {timeOnly(item.createdAt)}</Text>
         <HeartResult item={item} />
         <RangeScale bpm={item.bpm} />
         <View style={styles.noticeBox}>
-          <Text style={styles.noticeText}>{item.label} đang ở mức {statusForMeasurement(item).toLowerCase()}. Hãy dùng kết quả như thông tin tham khảo sức khỏe.</Text>
+          <Text style={styles.noticeText}>{metricNameFor(item.metric, language)}: {statusForMeasurement(item, language)}.</Text>
         </View>
         {item.note ? (
           <View style={styles.noticeBox}>
-            <Text style={styles.noteDetailLabel}>Ghi chú</Text>
+            <Text style={styles.noteDetailLabel}>{tx(language, 'note')}</Text>
             <Text style={styles.noticeText}>{item.note}</Text>
           </View>
         ) : null}
         {item.activity ? (
           <View style={styles.noticeBox}>
-            <Text style={styles.noteDetailLabel}>Hoàn cảnh đo</Text>
+            <Text style={styles.noteDetailLabel}>{tx(language, 'activity')}</Text>
             <Text style={styles.noticeText}>{item.activity}</Text>
           </View>
         ) : null}
         <View style={styles.summaryGrid}>
-          <Metric label="Thời gian đo" value={`${Math.round(item.durationMs / 1000)}`} suffix="giây" />
-          <Metric label="Độ tin cậy" value={`${Math.round(item.quality * 100)}`} suffix="%" />
+          <Metric label={tx(language, 'duration')} value={`${Math.round(item.durationMs / 1000)}`} suffix={tx(language, 'seconds')} />
+          <Metric label={tx(language, 'confidence')} value={`${Math.round(item.quality * 100)}`} suffix="%" />
         </View>
       </ScreenScaffold>
     );
@@ -975,16 +1002,16 @@ function RouteScreen({
 
   if (route === 'reminder') {
     return (
-      <ScreenScaffold title="Nhắc nhở đo nhịp tim" back={back}>
+      <ScreenScaffold title={tx(language, 'reminderTitle')} back={back}>
         <BellArt />
-        <Text style={styles.bigInstruction}>Đã đến lúc kiểm tra nhịp tim của bạn!</Text>
-        <Text style={styles.centerMuted}>Duy trì thói quen tốt để bảo vệ sức khỏe tim mạch.</Text>
+        <Text style={styles.bigInstruction}>{tx(language, 'reminderBig')}</Text>
+        <Text style={styles.centerMuted}>{tx(language, 'reminderSub')}</Text>
         <View style={styles.settingSwitchRow}>
-          <View style={styles.settingLeft}><Text style={styles.settingIcon}>◴</Text><Text style={styles.settingTitle}>Nhắc mỗi ngày lúc 09:00</Text></View>
+          <View style={styles.settingLeft}><Text style={styles.settingIcon}>◴</Text><Text style={styles.settingTitle}>{tx(language, 'dailyReminder')}</Text></View>
           <Switch value={reminderOn} onValueChange={setReminderOn} trackColor={{ true: '#f8b6c4' }} thumbColor={reminderOn ? rose : '#ffffff'} />
         </View>
         <Pressable style={styles.primaryButton} onPress={start}>
-          <Text style={styles.primaryButtonText}>Đo ngay</Text>
+          <Text style={styles.primaryButtonText}>{tx(language, 'measureNow')}</Text>
         </Pressable>
       </ScreenScaffold>
     );
@@ -992,21 +1019,21 @@ function RouteScreen({
 
   if (route === 'export') {
     return (
-      <ScreenScaffold title="Xuất dữ liệu" back={back}>
-        <SettingsRow icon="□" title="Xuất PDF" onPress={() => Alert.alert('Xuất dữ liệu', 'Chức năng xuất PDF sẽ dùng dữ liệu lịch sử đo.')} />
-        <SettingsRow icon="▤" title="Xuất Excel" onPress={() => Alert.alert('Xuất dữ liệu', 'Chức năng xuất Excel đã có màn hình sẵn sàng.')} />
-        <SettingsRow icon="≡" title="Xuất CSV" onPress={() => Alert.alert('Xuất dữ liệu', 'Chức năng xuất CSV đã có màn hình sẵn sàng.')} />
+      <ScreenScaffold title={tx(language, 'exportData')} back={back}>
+        <SettingsRow icon="□" title={tx(language, 'exportPdf')} onPress={() => Alert.alert(tx(language, 'exportData'), tx(language, 'exportReady'))} />
+        <SettingsRow icon="▤" title={tx(language, 'exportExcel')} onPress={() => Alert.alert(tx(language, 'exportData'), tx(language, 'exportReady'))} />
+        <SettingsRow icon="≡" title={tx(language, 'exportCsv')} onPress={() => Alert.alert(tx(language, 'exportData'), tx(language, 'exportReady'))} />
       </ScreenScaffold>
     );
   }
 
   return (
-    <ScreenScaffold title="Lịch sử trống" back={back}>
+    <ScreenScaffold title={tx(language, 'emptyHistory')} back={back}>
       <ClipboardArt />
-      <Text style={styles.bigInstruction}>Bạn chưa có lịch sử đo nào</Text>
-      <Text style={styles.centerMuted}>Hãy bắt đầu đo nhịp tim ngay.</Text>
+      <Text style={styles.bigInstruction}>{tx(language, 'noHistory')}</Text>
+      <Text style={styles.centerMuted}>{tx(language, 'startFirst')}</Text>
       <Pressable style={styles.primaryButton} onPress={start}>
-        <Text style={styles.primaryButtonText}>Bắt đầu đo</Text>
+        <Text style={styles.primaryButtonText}>{tx(language, 'startMeasure')}</Text>
       </Pressable>
     </ScreenScaffold>
   );
@@ -1014,6 +1041,7 @@ function RouteScreen({
 
 function ResultScreen({
   item,
+  language,
   values,
   noteText,
   setNoteText,
@@ -1024,6 +1052,7 @@ function ResultScreen({
   measureAgain,
 }: {
   item: Measurement;
+  language: Language;
   values: number[];
   noteText: string;
   setNoteText: (value: string) => void;
@@ -1034,46 +1063,47 @@ function ResultScreen({
   measureAgain: () => void;
 }) {
   const options = [
-    { label: 'Nghỉ ngơi', icon: '♙' },
-    { label: 'Sau tập', icon: '♢' },
-    { label: 'Đang ngồi', icon: '♘' },
-    { label: 'Vận động', icon: '↗' },
+    { label: tx(language, 'resting'), value: 'Nghỉ ngơi', icon: '♙' },
+    { label: tx(language, 'afterWorkout'), value: 'Sau tập', icon: '♢' },
+    { label: tx(language, 'sitting'), value: 'Đang ngồi', icon: '♘' },
+    { label: tx(language, 'active'), value: 'Vận động', icon: '↗' },
   ];
+  const activityLabel = options.find((option) => option.value === activity)?.label ?? activity;
 
   return (
     <View style={styles.resultPage}>
       <View style={styles.resultHeader}>
         <Pressable onPress={back}><Text style={styles.resultBack}>‹</Text></Pressable>
-        <Text style={styles.resultHeaderTitle}>Kết quả {item.label.toLowerCase()} của bạn</Text>
+        <Text style={styles.resultHeaderTitle}>{tx(language, 'yourResult')} {metricNameFor(item.metric, language).toLowerCase()}</Text>
         <Text style={styles.resultMenu}>•••</Text>
       </View>
       <ScrollView contentContainerStyle={styles.resultContent} showsVerticalScrollIndicator={false}>
-        <Text style={styles.resultTopBpm}>{formatMetricValue(item)}</Text>
+        <Text style={styles.resultTopBpm}>{formatMetricValue(item, language)}</Text>
         <Text style={styles.resultTopDate}>{formatDate(item.createdAt)}</Text>
         <RangeScale bpm={item.bpm} />
-        <Text style={styles.resultSummary}>{item.label} / Trạng thái: {statusForMeasurement(item)}</Text>
+        <Text style={styles.resultSummary}>{metricNameFor(item.metric, language)} / {tx(language, 'status')}: {statusForMeasurement(item, language)}</Text>
         {item.metric === 'spo2' ? <Text style={styles.resultDisclaimer}>Estimated SpO2 - For wellness purposes only.</Text> : null}
         {item.metric === 'respiration' ? <Text style={styles.resultDisclaimer}>Estimated Respiratory Rate - Wellness Purpose Only</Text> : null}
-        <Text style={styles.resultQuality}>♡ Độ tin cậy: {Math.round(item.quality * 100)}%</Text>
+        <Text style={styles.resultQuality}>♡ {tx(language, 'confidence')}: {Math.round(item.quality * 100)}%</Text>
 
         <View style={styles.activityRow}>
           {options.map((option) => (
             <ActivityOption
-              key={option.label}
+              key={option.value}
               label={option.label}
               icon={option.icon}
-              active={activity === option.label}
-              onPress={() => setActivity(option.label)}
+              active={activity === option.value}
+              onPress={() => setActivity(option.value)}
             />
           ))}
         </View>
-        <Text style={styles.activityLabel}>{activity}</Text>
+        <Text style={styles.activityLabel}>{activityLabel}</Text>
 
         <TextInput
           style={styles.resultNoteInput}
           value={noteText}
           onChangeText={setNoteText}
-          placeholder="Nhập ghi chú của bạn"
+          placeholder={tx(language, 'notePlaceholder')}
           placeholderTextColor="#8b949e"
           maxLength={180}
           multiline
@@ -1085,10 +1115,10 @@ function ResultScreen({
 
         <View style={styles.resultActionRow}>
           <Pressable style={styles.resultSecondaryButton} onPress={measureAgain}>
-            <Text style={styles.resultSecondaryText}>Đo lại</Text>
+            <Text style={styles.resultSecondaryText}>{tx(language, 'measureAgain')}</Text>
           </Pressable>
           <Pressable style={styles.resultPrimaryButton} onPress={finish}>
-            <Text style={styles.resultPrimaryText}>Tiếp tục</Text>
+            <Text style={styles.resultPrimaryText}>{tx(language, 'continue')}</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -1123,12 +1153,12 @@ function ScreenScaffold({ title, back, children }: { title: string; back?: () =>
   );
 }
 
-function BottomTabs({ active, goTab }: { active: TabKey; goTab: (tab: TabKey) => void }) {
+function BottomTabs({ active, goTab, language }: { active: TabKey; goTab: (tab: TabKey) => void; language: Language }) {
   const tabs: { key: TabKey; label: string; icon: string }[] = [
-    { key: 'measure', label: 'Trang chủ', icon: '⌂' },
-    { key: 'history', label: 'Lịch sử', icon: '◷' },
-    { key: 'stats', label: 'Thống kê', icon: '▥' },
-    { key: 'settings', label: 'Cài đặt', icon: '⚙' },
+    { key: 'measure', label: tx(language, 'home'), icon: '⌂' },
+    { key: 'history', label: tx(language, 'history'), icon: '◷' },
+    { key: 'stats', label: tx(language, 'stats'), icon: '▥' },
+    { key: 'settings', label: tx(language, 'settings'), icon: '⚙' },
   ];
   return (
     <View style={styles.bottomTabs}>
@@ -1409,6 +1439,55 @@ function ClipboardArt() {
   );
 }
 
+const dictionary = {
+  vi: {
+    appTitle: 'APP ĐO NHỊP TIM', appSub: 'Theo dõi sức khỏe tim mạch mỗi ngày', helpUpper: 'TRỢ GIÚP', measureUpper: 'ĐO', historyUpper: 'LỊCH SỬ',
+    hello: 'Xin chào!', badSignal: 'Tín hiệu không tốt', result: 'Kết quả đo', measuring: 'Đang đo', coverCamera: 'Đặt ngón tay che kín camera và giữ yên.', holdStill: 'Giữ yên tay, đừng di chuyển.', tapStart: 'Bấm vòng tròn để bắt đầu đo.', chooseMetric: 'Chọn chỉ số bạn muốn đo', startMeasure: 'Bắt đầu đo', stop: 'Dừng đo', retry: 'Thử lại', retryUpper: 'ĐO LẠI', seconds: 'giây', fingerPosition: 'Vị trí đặt tay', historyHint: 'Lịch sử kết quả nằm trong tab Lịch sử', screenshotLog: 'Chụp màn hình để tự gửi log TXT.',
+    heartRate: 'Nhịp tim', spo2: 'SpO2', respiration: 'Nhịp thở', hrv: 'HRV', stress: 'Căng thẳng',
+    heartRateDesc: 'Đo nhịp tim từ tín hiệu camera.', spo2Desc: 'Ước tính độ bão hòa oxy trong máu.', respirationDesc: 'Theo dõi tốc độ thở từ nhịp biến thiên.', hrvDesc: 'Độ biến thiên nhịp tim tham khảo.', stressDesc: 'Đánh giá căng thẳng từ nhịp tim.',
+    settings: 'Cài đặt', heartUnit: 'Đơn vị nhịp tim', reminder: 'Nhắc nhở đo nhịp tim', reminderTime: 'Thời gian nhắc', lightTheme: 'Chủ đề sáng', language: 'Ngôn ngữ', guide: 'Hướng dẫn sử dụng', exportData: 'Xuất dữ liệu', privacy: 'Chính sách bảo mật', localOnly: 'Đã lưu cục bộ', about: 'Giới thiệu ứng dụng', version: 'Phiên bản 1.0.0', replayOnboarding: 'Xem lại onboarding', on: 'Bật', off: 'Tắt',
+    historyTitle: 'Lịch sử đo', day: 'Ngày', week: 'Tuần', month: 'Tháng', emptyHistory: 'Lịch sử trống', demoHistoryHint: 'Bạn chưa có dữ liệu thật. Danh sách bên dưới là dữ liệu mẫu để xem giao diện.', home: 'Trang chủ', history: 'Lịch sử', stats: 'Thống kê',
+    average: 'Trung bình', highest: 'Cao nhất', lowest: 'Thấp nhất', heartZones: 'Vùng nhịp tim', lowZone: 'Thấp (<60)', normalZone: 'Bình thường (60-100)', highZone: 'Cao (>100)',
+    guideTitle: 'Hướng dẫn đo', guide1Title: 'Đặt ngón tay', guide1Text: 'Đặt đầu ngón tay che kín camera và đèn flash.', guide2Title: 'Giữ yên tay', guide2Text: 'Giữ tay ổn định trong 15-30 giây để có kết quả chính xác.', guide3Title: 'Chờ kết quả', guide3Text: 'Ứng dụng sẽ phân tích và hiển thị nhịp tim của bạn.', gotItStart: 'Hiểu rồi, bắt đầu đo', fingerInstruction: 'Đặt ngón tay che kín camera và đèn flash', fingerHint: 'Giữ yên tay và không ấn quá mạnh để tín hiệu ổn định hơn.',
+    detailTitle: 'Chi tiết kết quả', note: 'Ghi chú', activity: 'Hoàn cảnh đo', duration: 'Thời gian đo', confidence: 'Độ tin cậy', reminderTitle: 'Nhắc nhở đo nhịp tim', reminderBig: 'Đã đến lúc kiểm tra nhịp tim của bạn!', reminderSub: 'Duy trì thói quen tốt để bảo vệ sức khỏe tim mạch.', dailyReminder: 'Nhắc mỗi ngày lúc 09:00', measureNow: 'Đo ngay', exportPdf: 'Xuất PDF', exportExcel: 'Xuất Excel', exportCsv: 'Xuất CSV', exportReady: 'Chức năng xuất dữ liệu đã sẵn sàng.', noHistory: 'Bạn chưa có lịch sử đo nào', startFirst: 'Hãy bắt đầu đo nhịp tim ngay.',
+    yourResult: 'Kết quả', status: 'Trạng thái', resting: 'Nghỉ ngơi', afterWorkout: 'Sau tập', sitting: 'Đang ngồi', active: 'Vận động', notePlaceholder: 'Nhập ghi chú của bạn', measureAgain: 'Đo lại', continue: 'Tiếp tục', startNow: 'Bắt đầu ngay', later: 'Để sau',
+    onboardHeartTitle: 'Theo dõi nhịp tim của bạn', onboardHeartText: 'Đo nhịp tim nhanh chóng, chính xác bằng camera điện thoại.', onboardPrivacyTitle: 'An toàn & Bảo mật', onboardPrivacyText: 'Dữ liệu được lưu trên máy của bạn và không chia sẻ với bên thứ ba.', onboardTrackTitle: 'Lưu trữ & Theo dõi', onboardTrackText: 'Xem lịch sử, biểu đồ và theo dõi sức khỏe tim mạch theo thời gian.', onboardStartTitle: 'Sẵn sàng bắt đầu', onboardStartText: 'Hãy đảm bảo bạn ở nơi đủ sáng và giữ tay ổn định khi đo.',
+    normal: 'Bình thường', low: 'Thấp', high: 'Cao', medium: 'Trung bình', good: 'Tốt', watch: 'Cần theo dõi', waitingSignal: 'Đang chờ tín hiệu', levelUpper: 'MỨC',
+  },
+  en: {
+    appTitle: 'HEART RATE APP', appSub: 'Track your heart health every day', helpUpper: 'HELP', measureUpper: 'MEASURE', historyUpper: 'HISTORY',
+    hello: 'Hello!', badSignal: 'Poor signal', result: 'Result', measuring: 'Measuring', coverCamera: 'Cover the camera fully and keep still.', holdStill: 'Keep your finger still.', tapStart: 'Tap the circle to start.', chooseMetric: 'Choose a metric to measure', startMeasure: 'Start measuring', stop: 'Stop', retry: 'Retry', retryUpper: 'RETRY', seconds: 'sec', fingerPosition: 'Finger position', historyHint: 'Results are saved in History', screenshotLog: 'Take a screenshot to auto-share TXT logs.',
+    heartRate: 'Heart rate', spo2: 'SpO2', respiration: 'Respiration', hrv: 'HRV', stress: 'Stress',
+    heartRateDesc: 'Measure heart rate from camera signal.', spo2Desc: 'Estimate blood oxygen saturation.', respirationDesc: 'Track breathing rate from pulse variation.', hrvDesc: 'Reference heart rate variability.', stressDesc: 'Estimate stress from heart signal.',
+    settings: 'Settings', heartUnit: 'Heart rate unit', reminder: 'Heart rate reminder', reminderTime: 'Reminder time', lightTheme: 'Light theme', language: 'Language', guide: 'User guide', exportData: 'Export data', privacy: 'Privacy policy', localOnly: 'Stored locally', about: 'About app', version: 'Version 1.0.0', replayOnboarding: 'Replay onboarding', on: 'On', off: 'Off',
+    historyTitle: 'Measurement History', day: 'Day', week: 'Week', month: 'Month', emptyHistory: 'Empty history', demoHistoryHint: 'No real data yet. The list below is sample data for preview.', home: 'Home', history: 'History', stats: 'Stats',
+    average: 'Average', highest: 'Highest', lowest: 'Lowest', heartZones: 'Heart zones', lowZone: 'Low (<60)', normalZone: 'Normal (60-100)', highZone: 'High (>100)',
+    guideTitle: 'Measurement Guide', guide1Title: 'Place finger', guide1Text: 'Cover the camera and flash with your fingertip.', guide2Title: 'Keep still', guide2Text: 'Hold steady for 15-30 seconds for a better result.', guide3Title: 'Wait for result', guide3Text: 'The app analyzes your signal and shows the result.', gotItStart: 'Got it, start', fingerInstruction: 'Cover the camera and flash with your finger', fingerHint: 'Keep still and do not press too hard.',
+    detailTitle: 'Result details', note: 'Note', activity: 'Activity', duration: 'Duration', confidence: 'Confidence', reminderTitle: 'Heart rate reminder', reminderBig: 'Time to check your heart rate!', reminderSub: 'Keep a healthy tracking habit.', dailyReminder: 'Daily reminder at 09:00', measureNow: 'Measure now', exportPdf: 'Export PDF', exportExcel: 'Export Excel', exportCsv: 'Export CSV', exportReady: 'Data export is ready.', noHistory: 'You have no measurement history', startFirst: 'Start measuring now.',
+    yourResult: 'Your result', status: 'Status', resting: 'Resting', afterWorkout: 'After workout', sitting: 'Sitting', active: 'Active', notePlaceholder: 'Enter your note', measureAgain: 'Measure again', continue: 'Continue', startNow: 'Start now', later: 'Later',
+    onboardHeartTitle: 'Track your heart rate', onboardHeartText: 'Measure your heart rate quickly using the phone camera.', onboardPrivacyTitle: 'Safe & Private', onboardPrivacyText: 'Your data stays on your phone and is not shared.', onboardTrackTitle: 'Store & Track', onboardTrackText: 'View history, charts, and long-term heart health.', onboardStartTitle: 'Ready to start', onboardStartText: 'Use good lighting and keep your finger steady.',
+    normal: 'Normal', low: 'Low', high: 'High', medium: 'Medium', good: 'Good', watch: 'Watch', waitingSignal: 'Waiting for signal', levelUpper: 'LEVEL',
+  },
+} as const;
+
+function tx(language: Language, key: keyof typeof dictionary.vi) {
+  return dictionary[language][key] ?? dictionary.vi[key];
+}
+
+function metricNameFor(metric: MetricKey, language: Language) {
+  return tx(language, metric);
+}
+
+function metricDescriptionFor(metric: MetricKey, language: Language) {
+  return tx(language, `${metric}Desc` as keyof typeof dictionary.vi);
+}
+
+function stressLabel(value: string | undefined, language: Language) {
+  if (value === 'Cao') return tx(language, 'high');
+  if (value === 'Trung bình') return tx(language, 'medium');
+  return tx(language, 'low');
+}
+
 function makeDemo(id: string, metric: MetricKey, value: number, unit: string, bpm: number, hoursAgo: number): Measurement {
   const definition = healthMetrics.find((item) => item.key === metric) ?? healthMetrics[0];
   const derived = deriveHealthValues(bpm, 0.95, metric === 'spo2' ? value : undefined, metric === 'respiration' ? value : undefined);
@@ -1470,22 +1549,22 @@ function displayValueForMetricFromBpm(metric: MetricKey, bpm: number, quality: n
   return typeof value === 'number' ? value : bpm;
 }
 
-function displayUnitForMetric(metric: MetricKey) {
-  if (metric === 'stress') return 'MỨC';
+function displayUnitForMetric(metric: MetricKey, language: Language = 'vi') {
+  if (metric === 'stress') return tx(language, 'levelUpper');
   return healthMetrics.find((item) => item.key === metric)?.unit ?? 'BPM';
 }
 
-function formatMetricValue(item: Measurement) {
-  if (item.metric === 'stress') return item.stress ?? 'Thấp';
+function formatMetricValue(item: Measurement, language: Language = 'vi') {
+  if (item.metric === 'stress') return stressLabel(item.stress, language);
   return `${item.value}${item.unit ? ` ${item.unit}` : ''}`;
 }
 
-function statusForMeasurement(item: Measurement) {
-  if (item.metric === 'spo2') return item.value >= 95 ? 'Bình thường' : 'Thấp';
-  if (item.metric === 'respiration') return item.value >= 12 && item.value <= 20 ? 'Bình thường' : 'Cần theo dõi';
-  if (item.metric === 'hrv') return item.value >= 50 ? 'Tốt' : item.value >= 35 ? 'Trung bình' : 'Thấp';
-  if (item.metric === 'stress') return item.stress ?? 'Thấp';
-  return statusByBpm(item.bpm);
+function statusForMeasurement(item: Measurement, language: Language = 'vi') {
+  if (item.metric === 'spo2') return item.value >= 95 ? tx(language, 'normal') : tx(language, 'low');
+  if (item.metric === 'respiration') return item.value >= 12 && item.value <= 20 ? tx(language, 'normal') : tx(language, 'watch');
+  if (item.metric === 'hrv') return item.value >= 50 ? tx(language, 'good') : item.value >= 35 ? tx(language, 'medium') : tx(language, 'low');
+  if (item.metric === 'stress') return stressLabel(item.stress, language);
+  return statusByBpm(item.bpm, language);
 }
 
 function metricIsHigh(item: Measurement) {
@@ -1501,11 +1580,11 @@ function previousText(latest?: Measurement) {
   return `Kết quả trước: ${latest.bpm} BPM (${formatDate(latest.createdAt)})`;
 }
 
-function statusByBpm(bpm?: number) {
-  if (!bpm) return 'Đang chờ tín hiệu';
-  if (bpm < 60) return 'Thấp';
-  if (bpm > 100) return 'Cao';
-  return 'Bình thường';
+function statusByBpm(bpm?: number, language: Language = 'vi') {
+  if (!bpm) return tx(language, 'waitingSignal');
+  if (bpm < 60) return tx(language, 'low');
+  if (bpm > 100) return tx(language, 'high');
+  return tx(language, 'normal');
 }
 
 function formatDate(value: string) {
@@ -1526,35 +1605,35 @@ function dateOnly(value: string) {
   return new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(value));
 }
 
-function groupHistory(items: Measurement[], period: HistoryPeriod) {
+function groupHistory(items: Measurement[], period: HistoryPeriod, language: Language) {
   const groups = new Map<string, Measurement[]>();
   items.forEach((item) => {
-    const title = period === 'day' ? dayGroupTitle(item.createdAt) : period === 'week' ? weekGroupTitle(item.createdAt) : monthGroupTitle(item.createdAt);
+    const title = period === 'day' ? dayGroupTitle(item.createdAt, language) : period === 'week' ? weekGroupTitle(item.createdAt, language) : monthGroupTitle(item.createdAt, language);
     groups.set(title, [...(groups.get(title) ?? []), item]);
   });
   return Array.from(groups.entries()).map(([title, groupItems]) => ({ title, items: groupItems }));
 }
 
-function dayGroupTitle(value: string) {
+function dayGroupTitle(value: string, language: Language) {
   const date = new Date(value);
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
-  if (sameDate(date, today)) return 'Hôm nay';
-  if (sameDate(date, yesterday)) return 'Hôm qua';
+  if (sameDate(date, today)) return language === 'vi' ? 'Hôm nay' : 'Today';
+  if (sameDate(date, yesterday)) return language === 'vi' ? 'Hôm qua' : 'Yesterday';
   return dateOnly(value);
 }
 
-function weekGroupTitle(value: string) {
+function weekGroupTitle(value: string, language: Language) {
   const date = new Date(value);
   const start = startOfWeek(date);
   const end = new Date(start);
   end.setDate(start.getDate() + 6);
-  return `${dateOnly(start.toISOString())} - ${dateOnly(end.toISOString())}`;
+  return `${language === 'vi' ? 'Tuần' : 'Week'} ${dateOnly(start.toISOString())} - ${dateOnly(end.toISOString())}`;
 }
 
-function monthGroupTitle(value: string) {
-  return new Intl.DateTimeFormat('vi-VN', { month: 'long', year: 'numeric' }).format(new Date(value));
+function monthGroupTitle(value: string, language: Language) {
+  return new Intl.DateTimeFormat(language === 'vi' ? 'vi-VN' : 'en-US', { month: 'long', year: 'numeric' }).format(new Date(value));
 }
 
 function startOfWeek(date: Date) {
