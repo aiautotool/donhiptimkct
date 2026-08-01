@@ -1,5 +1,4 @@
 import AVFoundation
-import AudioToolbox
 import ExpoModulesCore
 import UIKit
 
@@ -19,6 +18,7 @@ public class HeartRatePpgModule: Module {
   private var stableFingerFrames = 0
   private var cameraControlsLocked = false
   private var screenshotObserver: NSObjectProtocol?
+  private var beatPlayer: AVAudioPlayer?
 
   public func definition() -> ModuleDefinition {
     Name("HeartRatePpg")
@@ -41,7 +41,7 @@ public class HeartRatePpgModule: Module {
     }
 
     AsyncFunction("playBeatAsync") {
-      AudioServicesPlaySystemSound(1104)
+      self.playBeat()
     }
 
     AsyncFunction("startMeasurementAsync") { (durationSeconds: Double?) in
@@ -71,6 +71,55 @@ public class HeartRatePpgModule: Module {
       NotificationCenter.default.removeObserver(screenshotObserver)
       self.screenshotObserver = nil
     }
+  }
+
+  private func playBeat() {
+    DispatchQueue.main.async {
+      do {
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try audioSession.setActive(true)
+        if self.beatPlayer == nil {
+          self.beatPlayer = try AVAudioPlayer(data: Self.makeBeepWavData())
+          self.beatPlayer?.volume = 1.0
+          self.beatPlayer?.prepareToPlay()
+        }
+        self.beatPlayer?.currentTime = 0
+        self.beatPlayer?.play()
+      } catch {
+      }
+    }
+  }
+
+  private static func makeBeepWavData() -> Data {
+    let sampleRate = 44_100
+    let duration = 0.085
+    let frequency = 1_120.0
+    let sampleCount = Int(Double(sampleRate) * duration)
+    var pcm = Data(capacity: sampleCount * 2)
+    for index in 0..<sampleCount {
+      let t = Double(index) / Double(sampleRate)
+      let envelope = min(1.0, Double(index) / 360.0) * min(1.0, Double(sampleCount - index) / 760.0)
+      let value = Int16(sin(2.0 * Double.pi * frequency * t) * 24_000.0 * envelope)
+      var littleEndian = value.littleEndian
+      pcm.append(Data(bytes: &littleEndian, count: 2))
+    }
+
+    var data = Data()
+    data.append("RIFF".data(using: .ascii)!)
+    data.append(UInt32(36 + pcm.count).littleEndianData)
+    data.append("WAVEfmt ".data(using: .ascii)!)
+    data.append(UInt32(16).littleEndianData)
+    data.append(UInt16(1).littleEndianData)
+    data.append(UInt16(1).littleEndianData)
+    data.append(UInt32(sampleRate).littleEndianData)
+    data.append(UInt32(sampleRate * 2).littleEndianData)
+    data.append(UInt16(2).littleEndianData)
+    data.append(UInt16(16).littleEndianData)
+    data.append("data".data(using: .ascii)!)
+    data.append(UInt32(pcm.count).littleEndianData)
+    data.append(pcm)
+    return data
   }
 
   private func start(durationSeconds: Double) throws {
@@ -740,5 +789,12 @@ private class PpgFrameDelegate: NSObject, AVCaptureVideoDataOutputSampleBufferDe
 
   func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
     onSample?(sampleBuffer)
+  }
+}
+
+private extension FixedWidthInteger {
+  var littleEndianData: Data {
+    var value = self.littleEndian
+    return Data(bytes: &value, count: MemoryLayout<Self>.size)
   }
 }
