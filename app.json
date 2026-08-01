@@ -1,15 +1,24 @@
 {
   "expo": {
-    "name": "heart-rate-app",
+    "name": "Do Nhip Tim",
     "slug": "heart-rate-app",
+    "scheme": "donhiptim",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.donhiptim.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Ung dung dung camera sau va den flash de uoc tinh nhip tim bang tin hieu PPG. Khung hinh khong duoc luu hoac tai len."
+      }
     },
     "android": {
+      "package": "com.donhiptim.mobile",
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -20,6 +29,9 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      "expo-sharing"
+    ]
   }
 }
