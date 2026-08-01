@@ -133,7 +133,7 @@ public class HeartRatePpgModule: Module {
     try device.lockForConfiguration()
     defer { device.unlockForConfiguration() }
     if on {
-      let coolLevel = min(AVCaptureDevice.maxAvailableTorchLevel, 0.18)
+      let coolLevel = min(AVCaptureDevice.maxAvailableTorchLevel, 0.28)
       try device.setTorchModeOn(level: coolLevel)
     } else {
       device.torchMode = .off
@@ -223,7 +223,7 @@ public class HeartRatePpgModule: Module {
 
     if elapsed >= durationSeconds || (elapsed >= 30 && qualityScore() >= 0.82) {
       let result = estimateBpm()
-      if let bpm = result.bpm, result.quality >= 0.48 {
+      if let bpm = result.bpm, result.quality >= 0.38 {
         send(status: "complete", elapsedMs: Int(elapsed * 1000), progress: 1, bpm: bpm, quality: result.quality, message: nil)
         cleanup()
       } else {
@@ -382,18 +382,19 @@ public class HeartRatePpgModule: Module {
     let peaks = peakBpm(signal: signal, sampleRate: sampleRate, final: final)
     let ac = autocorrelationBpm(signal: signal, sampleRate: sampleRate, final: final)
     let results = [fft, peaks, ac].compactMap { $0 }
-    guard results.count == 3 else { return nil }
+    guard results.count >= 2 else { return nil }
 
     let bpms = results.map(\.bpm)
     let spread = Double((bpms.max() ?? 0) - (bpms.min() ?? 0))
-    let allowedSpread = final ? 8.0 : 12.0
+    let allowedSpread = final ? (results.count == 3 ? 10.0 : 7.0) : 14.0
     guard spread <= allowedSpread else { return nil }
 
     let weightedSum = results.reduce(0.0) { $0 + Double($1.bpm) * $1.stability }
     let totalWeight = max(results.reduce(0.0) { $0 + $1.stability }, 0.0001)
     let fused = Int((weightedSum / totalWeight).rounded())
     let agreement = max(0, 1 - spread / allowedSpread)
-    let stability = min(max(results.map(\.stability).reduce(0, +) / 3 * 0.7 + agreement * 0.3, 0), 1)
+    let methodCoverage = results.count == 3 ? 1.0 : 0.82
+    let stability = min(max((results.map(\.stability).reduce(0, +) / Double(results.count) * 0.7 + agreement * 0.3) * methodCoverage, 0), 1)
     return (fused, stability)
   }
 
@@ -452,7 +453,7 @@ public class HeartRatePpgModule: Module {
 
     let averagePower = powers.values.reduce(0, +) / Double(max(powers.count, 1))
     let ratio = bestPower / max(averagePower, 0.0000001)
-    guard ratio >= (final ? 1.55 : 1.25) else { return nil }
+    guard ratio >= (final ? 1.35 : 1.18) else { return nil }
     return (bestBpm, min(max((ratio - 1) / 4, 0), 1))
   }
 
@@ -474,10 +475,10 @@ public class HeartRatePpgModule: Module {
         lastPeak = index
       }
     }
-    guard peaks.count >= (final ? 8 : 4) else { return nil }
+    guard peaks.count >= (final ? 6 : 4) else { return nil }
     let intervals = zip(peaks.dropFirst(), peaks).map { Double($0 - $1) / sampleRate }
     let usable = intervals.filter { $0 >= 60 / 150 && $0 <= 60 / 48 }
-    guard usable.count >= (final ? 7 : 3) else { return nil }
+    guard usable.count >= (final ? 5 : 3) else { return nil }
     let period = median(usable)
     let bpm = Int((60 / period).rounded())
     guard bpm >= 48 && bpm <= 150 else { return nil }
@@ -499,7 +500,7 @@ public class HeartRatePpgModule: Module {
         bestLag = lag
       }
     }
-    guard bestLag > 0, bestCorr >= (final ? 0.32 : 0.24) else { return nil }
+    guard bestLag > 0, bestCorr >= (final ? 0.26 : 0.2) else { return nil }
     let bpm = Int((60 * sampleRate / Double(bestLag)).rounded())
     guard bpm >= 48 && bpm <= 150 else { return nil }
     return (bpm, min(max((bestCorr - 0.2) / 0.7, 0), 1))

@@ -110,7 +110,9 @@ class HeartRatePpgModule : Module() {
               addTarget(target)
               set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                set(CaptureRequest.FLASH_STRENGTH_LEVEL, 1)
+                val maxFlashLevel = manager.getCameraCharacteristics(cameraId)
+                  .get(CameraCharacteristics.FLASH_INFO_STRENGTH_MAXIMUM_LEVEL) ?: 1
+                set(CaptureRequest.FLASH_STRENGTH_LEVEL, min(2, maxFlashLevel))
               }
               set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
               set(CaptureRequest.CONTROL_AE_LOCK, false)
@@ -207,7 +209,7 @@ class HeartRatePpgModule : Module() {
 
     if (elapsed >= durationMs || (elapsed >= 30_000 && qualityScore() >= 0.82)) {
       val result = estimateBpm()
-      if (result.first != null && result.second >= 0.48) {
+      if (result.first != null && result.second >= 0.38) {
         send("complete", elapsed, 1.0, bpm = result.first, quality = result.second)
         cleanup()
       } else {
@@ -397,17 +399,22 @@ class HeartRatePpgModule : Module() {
     val peaks = peakBpm(signal, sampleRate, final)
     val ac = autocorrelationBpm(signal, sampleRate, final)
     val results = listOfNotNull(fft, peaks, ac)
-    if (results.size != 3) return null
+    if (results.size < 2) return null
 
     val bpms = results.map { it.first ?: return null }
     val spread = (bpms.maxOrNull() ?: 0) - (bpms.minOrNull() ?: 0)
-    val allowedSpread = if (final) 8.0 else 12.0
+    val allowedSpread = if (final) {
+      if (results.size == 3) 10.0 else 7.0
+    } else {
+      14.0
+    }
     if (spread > allowedSpread) return null
 
     val totalWeight = max(results.sumOf { it.second }, 0.0001)
     val fused = (results.sumOf { (it.first ?: 0) * it.second } / totalWeight).roundToInt()
     val agreement = (1 - spread / allowedSpread).coerceIn(0.0, 1.0)
-    val stability = (results.map { it.second }.average() * 0.7 + agreement * 0.3).coerceIn(0.0, 1.0)
+    val methodCoverage = if (results.size == 3) 1.0 else 0.82
+    val stability = ((results.map { it.second }.average() * 0.7 + agreement * 0.3) * methodCoverage).coerceIn(0.0, 1.0)
     return Pair(fused, stability)
   }
 
@@ -465,7 +472,7 @@ class HeartRatePpgModule : Module() {
 
     val averagePower = powers.values.average()
     val ratio = bestPower / max(averagePower, 0.0000001)
-    if (ratio < if (final) 1.55 else 1.25) return null
+    if (ratio < if (final) 1.35 else 1.18) return null
     return Pair(bestBpm, ((ratio - 1) / 4).coerceIn(0.0, 1.0))
   }
 
@@ -487,10 +494,10 @@ class HeartRatePpgModule : Module() {
         lastPeak = index
       }
     }
-    if (peaks.size < if (final) 8 else 4) return null
+    if (peaks.size < if (final) 6 else 4) return null
     val intervals = peaks.drop(1).zip(peaks).map { (right, left) -> (right - left) / sampleRate }
       .filter { it >= 60.0 / 150 && it <= 60.0 / 48 }
-    if (intervals.size < if (final) 7 else 3) return null
+    if (intervals.size < if (final) 5 else 3) return null
     val period = median(intervals)
     val bpm = (60 / period).roundToInt()
     if (bpm !in 48..150) return null
@@ -512,7 +519,7 @@ class HeartRatePpgModule : Module() {
         bestLag = lag
       }
     }
-    if (bestLag <= 0 || bestCorr < if (final) 0.32 else 0.24) return null
+    if (bestLag <= 0 || bestCorr < if (final) 0.26 else 0.2) return null
     val bpm = (60 * sampleRate / bestLag).roundToInt()
     if (bpm !in 48..150) return null
     return Pair(bpm, ((bestCorr - 0.2) / 0.7).coerceIn(0.0, 1.0))
