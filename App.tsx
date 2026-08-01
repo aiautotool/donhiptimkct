@@ -199,6 +199,16 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const subscription = HeartRatePpgModule.addListener('onScreenshotTaken', (event: { at: string }) => {
+      void (async () => {
+        await appendDebugLog('SCREENSHOT_TAKEN', { at: event.at, route: routeRef.current });
+        await shareDebugLog();
+      })();
+    });
+    return () => subscription.remove();
+  }, []);
+
   const latest = measurements[0];
   const history = measurements.length > 0 ? measurements : demoHistory;
   const isMeasuring = update.status === 'warming' || update.status === 'measuring';
@@ -494,7 +504,6 @@ export default function App() {
           history={history}
           reminderOn={reminderOn}
           setReminderOn={setReminderOn}
-          shareDebugLog={() => void shareDebugLog()}
           pendingResult={pendingResult}
           values={signalHistory}
           noteText={noteText}
@@ -533,7 +542,6 @@ export default function App() {
           selectedMetric={selectedMetric}
           setSelectedMetric={setSelectedMetric}
           debugError={debugError}
-          shareDebugLog={() => void shareDebugLog()}
         />
       ) : activeTab === 'history' ? (
         <HistoryScreen items={history} realCount={measurements.length} openDetail={openDetail} openEmpty={() => setRoute('empty-history')} />
@@ -552,7 +560,6 @@ export default function App() {
             setOnboardPage(0);
             setAccepted(false);
           }}
-          shareDebugLog={() => void shareDebugLog()}
         />
       )}
       <BottomTabs active={activeTab} goTab={goTab} />
@@ -622,7 +629,6 @@ function MeasureScreen({
   selectedMetric,
   setSelectedMetric,
   debugError,
-  shareDebugLog,
 }: {
   update: PpgUpdatePayload;
   latest?: Measurement;
@@ -638,7 +644,6 @@ function MeasureScreen({
   selectedMetric: MetricKey;
   setSelectedMetric: (value: MetricKey) => void;
   debugError?: string;
-  shareDebugLog: () => void;
 }) {
   const complete = update.status === 'complete';
   const failed = update.status === 'failed';
@@ -699,11 +704,6 @@ function MeasureScreen({
             <Pressable style={styles.primaryButton} onPress={toggleMeasurement}>
               <Text style={styles.primaryButtonText}>Bắt đầu đo {metric.label.toLowerCase()}</Text>
             </Pressable>
-            {DEBUG_MODE ? (
-              <Pressable style={styles.debugButton} onPress={shareDebugLog}>
-                <Text style={styles.debugButtonText}>Gửi file log TXT</Text>
-              </Pressable>
-            ) : null}
             {selectedMetric === 'spo2' ? <Text style={styles.spo2Disclaimer}>Estimated SpO2 - For wellness purposes only.</Text> : null}
           </View>
         ) : (
@@ -739,10 +739,7 @@ function MeasureScreen({
         {DEBUG_MODE ? (
           <View style={styles.debugBox}>
             <Text style={styles.debugTitle}>DEBUG ERROR</Text>
-            <Text style={styles.debugText}>{debugError ?? 'Không có lỗi hiện tại. Có thể gửi log TXT sau mỗi lần đo.'}</Text>
-            <Pressable style={styles.debugButton} onPress={shareDebugLog}>
-              <Text style={styles.debugButtonText}>Gửi file log TXT</Text>
-            </Pressable>
+            <Text style={styles.debugText}>{debugError ?? 'Chụp màn hình để tự gửi log TXT.'}</Text>
           </View>
         ) : null}
           </>
@@ -829,7 +826,6 @@ function SettingsScreen({
   openReminder,
   openExport,
   resetOnboarding,
-  shareDebugLog,
 }: {
   reminderOn: boolean;
   setReminderOn: (value: boolean) => void;
@@ -839,7 +835,6 @@ function SettingsScreen({
   openReminder: () => void;
   openExport: () => void;
   resetOnboarding: () => void;
-  shareDebugLog: () => void;
 }) {
   return (
     <ScreenScaffold title="Cài đặt">
@@ -853,7 +848,6 @@ function SettingsScreen({
       <SettingsRow icon="🌐" title="Ngôn ngữ" value="Tiếng Việt" />
       <SettingsRow icon="?" title="Hướng dẫn sử dụng" onPress={openGuide} />
       <SettingsRow icon="⇪" title="Xuất dữ liệu" onPress={openExport} />
-      <SettingsRow icon="!" title="Gửi log lỗi" value="TXT" onPress={shareDebugLog} />
       <SettingsRow icon="▣" title="Chính sách bảo mật" value="Đã lưu cục bộ" />
       <SettingsRow icon="i" title="Giới thiệu ứng dụng" value="Phiên bản 1.0.0" />
       <Pressable style={styles.secondaryButton} onPress={resetOnboarding}>
@@ -869,7 +863,6 @@ function RouteScreen({
   history,
   reminderOn,
   setReminderOn,
-  shareDebugLog,
   pendingResult,
   values,
   noteText,
@@ -886,7 +879,6 @@ function RouteScreen({
   history: Measurement[];
   reminderOn: boolean;
   setReminderOn: (value: boolean) => void;
-  shareDebugLog: () => void;
   pendingResult?: Measurement;
   values: number[];
   noteText: string;
@@ -994,7 +986,6 @@ function RouteScreen({
         <SettingsRow icon="□" title="Xuất PDF" onPress={() => Alert.alert('Xuất dữ liệu', 'Chức năng xuất PDF sẽ dùng dữ liệu lịch sử đo.')} />
         <SettingsRow icon="▤" title="Xuất Excel" onPress={() => Alert.alert('Xuất dữ liệu', 'Chức năng xuất Excel đã có màn hình sẵn sàng.')} />
         <SettingsRow icon="≡" title="Xuất CSV" onPress={() => Alert.alert('Xuất dữ liệu', 'Chức năng xuất CSV đã có màn hình sẵn sàng.')} />
-        <SettingsRow icon="!" title="Gửi log lỗi" value="TXT" onPress={shareDebugLog} />
       </ScreenScaffold>
     );
   }
@@ -2022,19 +2013,6 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 11,
     lineHeight: 16,
-  },
-  debugButton: {
-    alignItems: 'center',
-    backgroundColor: '#ef4444',
-    borderRadius: 8,
-    height: 38,
-    justifyContent: 'center',
-    marginTop: 10,
-  },
-  debugButtonText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '900',
   },
   bottomTabs: {
     alignItems: 'center',

@@ -14,4 +14,5 @@ export type PpgUpdatePayload = {
 
 export type HeartRatePpgModuleEvents = {
   onPpgUpdate: (params: PpgUpdatePayload) => void;
+  onScreenshotTaken: (params: { at: string }) => void;
 };

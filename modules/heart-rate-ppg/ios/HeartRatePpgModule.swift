@@ -1,5 +1,6 @@
 import AVFoundation
 import ExpoModulesCore
+import UIKit
 
 public class HeartRatePpgModule: Module {
   private let session = AVCaptureSession()
@@ -16,11 +17,20 @@ public class HeartRatePpgModule: Module {
   private var hasSeenFinger = false
   private var stableFingerFrames = 0
   private var cameraControlsLocked = false
+  private var screenshotObserver: NSObjectProtocol?
 
   public func definition() -> ModuleDefinition {
     Name("HeartRatePpg")
 
-    Events("onPpgUpdate")
+    Events("onPpgUpdate", "onScreenshotTaken")
+
+    OnStartObserving("onScreenshotTaken") {
+      self.startScreenshotObserver()
+    }
+
+    OnStopObserving("onScreenshotTaken") {
+      self.stopScreenshotObserver()
+    }
 
     AsyncFunction("isAvailableAsync") { () -> Bool in
       guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
@@ -35,6 +45,26 @@ public class HeartRatePpgModule: Module {
 
     AsyncFunction("stopMeasurementAsync") {
       self.stop(status: "stopped", message: nil)
+    }
+  }
+
+  private func startScreenshotObserver() {
+    guard screenshotObserver == nil else { return }
+    screenshotObserver = NotificationCenter.default.addObserver(
+      forName: UIApplication.userDidTakeScreenshotNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      self?.sendEvent("onScreenshotTaken", [
+        "at": ISO8601DateFormatter().string(from: Date())
+      ])
+    }
+  }
+
+  private func stopScreenshotObserver() {
+    if let screenshotObserver {
+      NotificationCenter.default.removeObserver(screenshotObserver)
+      self.screenshotObserver = nil
     }
   }
 
