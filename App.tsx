@@ -45,6 +45,7 @@ type MetricKey = 'heartRate' | 'spo2' | 'respiration' | 'hrv' | 'stress';
 type TabKey = 'measure' | 'history' | 'stats' | 'settings';
 type RouteKey = 'main' | 'guide' | 'finger' | 'result' | 'detail' | 'reminder' | 'export' | 'empty-history';
 type DebugEntry = { at: string; code: string; data?: unknown };
+type HistoryPeriod = 'day' | 'week' | 'month';
 
 const STORAGE_KEY = 'donhiptim.measurements.v2';
 const CONSENT_KEY = 'donhiptim.consent.v1';
@@ -760,9 +761,16 @@ function HistoryScreen({
   openDetail: (item: Measurement) => void;
   openEmpty: () => void;
 }) {
+  const [period, setPeriod] = useState<HistoryPeriod>('day');
+  const groups = groupHistory(items, period);
+
   return (
     <ScreenScaffold title="Lịch sử đo">
-      <Segmented labels={['Ngày', 'Tuần', 'Tháng']} active={0} />
+      <Segmented
+        labels={['Ngày', 'Tuần', 'Tháng']}
+        active={period === 'day' ? 0 : period === 'week' ? 1 : 2}
+        onChange={(index) => setPeriod(index === 0 ? 'day' : index === 1 ? 'week' : 'month')}
+      />
       {realCount === 0 ? (
         <Pressable style={styles.emptyHint} onPress={openEmpty}>
           <ClipboardArt />
@@ -770,10 +778,12 @@ function HistoryScreen({
           <Text style={styles.emptyText}>Bạn chưa có dữ liệu thật. Danh sách bên dưới là dữ liệu mẫu để xem giao diện.</Text>
         </Pressable>
       ) : null}
-      <Text style={styles.sectionLabel}>Hôm nay</Text>
-      {items.slice(0, 2).map((item) => <HistoryRow key={item.id} item={item} openDetail={openDetail} />)}
-      <Text style={styles.sectionLabel}>Hôm qua</Text>
-      {items.slice(2).map((item) => <HistoryRow key={item.id} item={item} openDetail={openDetail} />)}
+      {groups.map((group) => (
+        <View key={group.title}>
+          <Text style={styles.sectionLabel}>{group.title}</Text>
+          {group.items.map((item) => <HistoryRow key={item.id} item={item} openDetail={openDetail} />)}
+        </View>
+      ))}
     </ScreenScaffold>
   );
 }
@@ -1271,10 +1281,14 @@ function GuideStep({ number, title, text }: { number: string; title: string; tex
   );
 }
 
-function Segmented({ labels, active }: { labels: string[]; active: number }) {
+function Segmented({ labels, active, onChange }: { labels: string[]; active: number; onChange?: (index: number) => void }) {
   return (
     <View style={styles.segmented}>
-      {labels.map((label, index) => <Text key={label} style={[styles.segment, active === index && styles.segmentActive]}>{label}</Text>)}
+      {labels.map((label, index) => (
+        <Pressable key={label} style={[styles.segment, active === index && styles.segmentActive]} onPress={() => onChange?.(index)}>
+          <Text style={[styles.segmentText, active === index && styles.segmentTextActive]}>{label}</Text>
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -1510,6 +1524,49 @@ function timeOnly(value: string) {
 
 function dateOnly(value: string) {
   return new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(value));
+}
+
+function groupHistory(items: Measurement[], period: HistoryPeriod) {
+  const groups = new Map<string, Measurement[]>();
+  items.forEach((item) => {
+    const title = period === 'day' ? dayGroupTitle(item.createdAt) : period === 'week' ? weekGroupTitle(item.createdAt) : monthGroupTitle(item.createdAt);
+    groups.set(title, [...(groups.get(title) ?? []), item]);
+  });
+  return Array.from(groups.entries()).map(([title, groupItems]) => ({ title, items: groupItems }));
+}
+
+function dayGroupTitle(value: string) {
+  const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (sameDate(date, today)) return 'Hôm nay';
+  if (sameDate(date, yesterday)) return 'Hôm qua';
+  return dateOnly(value);
+}
+
+function weekGroupTitle(value: string) {
+  const date = new Date(value);
+  const start = startOfWeek(date);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return `${dateOnly(start.toISOString())} - ${dateOnly(end.toISOString())}`;
+}
+
+function monthGroupTitle(value: string) {
+  return new Intl.DateTimeFormat('vi-VN', { month: 'long', year: 'numeric' }).format(new Date(value));
+}
+
+function startOfWeek(date: Date) {
+  const start = new Date(date);
+  const day = start.getDay() || 7;
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - day + 1);
+  return start;
+}
+
+function sameDate(left: Date, right: Date) {
+  return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
 }
 
 function errorToText(error: unknown) {
@@ -2141,18 +2198,24 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   segment: {
-    color: muted,
+    alignItems: 'center',
     flex: 1,
-    fontSize: 13,
-    fontWeight: '800',
+    justifyContent: 'center',
     paddingVertical: 9,
-    textAlign: 'center',
   },
   segmentActive: {
     backgroundColor: rose,
     borderRadius: 9,
-    color: '#ffffff',
     overflow: 'hidden',
+  },
+  segmentText: {
+    color: muted,
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  segmentTextActive: {
+    color: '#ffffff',
   },
   sectionLabel: {
     color: ink,
