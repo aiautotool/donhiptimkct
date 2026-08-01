@@ -115,6 +115,7 @@ export default function App() {
   const measurementSavedRef = useRef(false);
   const routeRef = useRef<RouteKey>('main');
   const beatTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const beatBpmRef = useRef<{ previous?: number; current?: number }>({});
 
   useEffect(() => {
     void bootstrap();
@@ -230,17 +231,35 @@ export default function App() {
   }, [isMeasuring]);
 
   useEffect(() => {
+    if (!isMeasuring || selectedMetric !== 'heartRate' || !liveBpm || liveBpm < 40) return;
+    const bpm = Math.max(45, Math.min(180, liveBpm));
+    beatBpmRef.current = {
+      previous: beatBpmRef.current.current ?? bpm,
+      current: bpm,
+    };
+  }, [isMeasuring, liveBpm, selectedMetric]);
+
+  useEffect(() => {
     if (beatTimerRef.current) {
       clearTimeout(beatTimerRef.current);
       beatTimerRef.current = undefined;
     }
-    if (!isMeasuring || !liveBpm || liveBpm < 40 || selectedMetric !== 'heartRate') return;
+    if (!isMeasuring || selectedMetric !== 'heartRate') {
+      beatBpmRef.current = {};
+      return;
+    }
     let cancelled = false;
     const scheduleBeat = () => {
       if (cancelled) return;
-      const bpm = Math.max(45, Math.min(180, liveBpm));
+      const { previous, current } = beatBpmRef.current;
+      if (!current) {
+        beatTimerRef.current = setTimeout(scheduleBeat, 180);
+        return;
+      }
+      const averagedBpm = previous ? (previous + current) / 2 : current;
+      const intervalMs = 60000 / Math.max(45, Math.min(180, averagedBpm));
       void HeartRatePpgModule.playBeatAsync();
-      beatTimerRef.current = setTimeout(scheduleBeat, 60000 / bpm);
+      beatTimerRef.current = setTimeout(scheduleBeat, intervalMs);
     };
     scheduleBeat();
     return () => {
@@ -250,7 +269,7 @@ export default function App() {
         beatTimerRef.current = undefined;
       }
     };
-  }, [isMeasuring, liveBpm, selectedMetric]);
+  }, [isMeasuring, selectedMetric]);
 
   const stats = useMemo(() => {
     const items = history;
