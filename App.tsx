@@ -22,7 +22,17 @@ import type { PpgUpdatePayload } from './modules/heart-rate-ppg/src/HeartRatePpg
 
 type Measurement = {
   id: string;
+  metric: MetricKey;
+  label: string;
+  value: number;
+  unit: string;
   bpm: number;
+  spO2?: number;
+  respiration?: number;
+  hrv?: number;
+  stress?: string;
+  temperature?: number;
+  bloodPressure?: string;
   quality: number;
   durationMs: number;
   createdAt: string;
@@ -30,6 +40,7 @@ type Measurement = {
   note?: string;
 };
 
+type MetricKey = 'heartRate' | 'spo2' | 'respiration' | 'hrv' | 'stress' | 'temperature' | 'bloodPressure';
 type TabKey = 'measure' | 'history' | 'stats' | 'settings';
 type RouteKey = 'main' | 'guide' | 'finger' | 'result' | 'detail' | 'reminder' | 'export' | 'empty-history';
 
@@ -46,6 +57,16 @@ const muted = '#667085';
 const line = '#e8edf3';
 const KEEP_AWAKE_TAG = 'heart-rate-measurement';
 
+const healthMetrics: { key: MetricKey; label: string; short: string; unit: string; icon: string; color: string; description: string }[] = [
+  { key: 'heartRate', label: 'Nhịp tim', short: 'Nhịp tim (BPM)', unit: 'BPM', icon: '♥', color: rose, description: 'Đo nhịp tim từ tín hiệu camera.' },
+  { key: 'spo2', label: 'SpO2', short: 'SpO2', unit: '%', icon: '♢', color: '#2f80ed', description: 'Ước tính độ bão hòa oxy trong máu.' },
+  { key: 'respiration', label: 'Nhịp thở', short: 'Nhịp thở', unit: 'RPM', icon: '♒', color: '#38bdf8', description: 'Theo dõi tốc độ thở từ nhịp biến thiên.' },
+  { key: 'hrv', label: 'HRV', short: 'HRV', unit: 'ms', icon: '↯', color: '#22c55e', description: 'Độ biến thiên nhịp tim tham khảo.' },
+  { key: 'stress', label: 'Căng thẳng', short: 'Căng thẳng', unit: '', icon: '☺', color: '#f59e0b', description: 'Đánh giá căng thẳng từ nhịp tim.' },
+  { key: 'temperature', label: 'Nhiệt độ cơ thể', short: 'Nhiệt độ', unit: '°C', icon: '♨', color: '#8b5cf6', description: 'Ước tính nhiệt độ cơ thể.' },
+  { key: 'bloodPressure', label: 'Huyết áp', short: 'Huyết áp', unit: 'mmHg', icon: '♦', color: '#14b8a6', description: 'Ước tính xu hướng huyết áp.' },
+];
+
 const initialUpdate: PpgUpdatePayload = {
   status: 'idle',
   elapsedMs: 0,
@@ -54,11 +75,11 @@ const initialUpdate: PpgUpdatePayload = {
 };
 
 const demoHistory: Measurement[] = [
-  { id: 'demo-1', bpm: 78, quality: 0.98, durationMs: 30000, createdAt: new Date().toISOString() },
-  { id: 'demo-2', bpm: 72, quality: 0.94, durationMs: 30000, createdAt: new Date(Date.now() - 2 * 3600_000).toISOString() },
-  { id: 'demo-3', bpm: 85, quality: 0.91, durationMs: 30000, createdAt: new Date(Date.now() - 15 * 3600_000).toISOString() },
-  { id: 'demo-4', bpm: 92, quality: 0.89, durationMs: 30000, createdAt: new Date(Date.now() - 18 * 3600_000).toISOString() },
-  { id: 'demo-5', bpm: 65, quality: 0.96, durationMs: 30000, createdAt: new Date(Date.now() - 44 * 3600_000).toISOString() },
+  makeDemo('demo-1', 'heartRate', 78, 'BPM', 78, 0),
+  makeDemo('demo-2', 'spo2', 98, '%', 72, 2),
+  makeDemo('demo-3', 'respiration', 16, 'RPM', 85, 15),
+  makeDemo('demo-4', 'stress', 1, '', 92, 18),
+  makeDemo('demo-5', 'hrv', 42, 'ms', 65, 44),
 ];
 
 export default function App() {
@@ -67,6 +88,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('measure');
   const [route, setRoute] = useState<RouteKey>('main');
   const [selected, setSelected] = useState<Measurement | undefined>();
+  const [selectedMetric, setSelectedMetric] = useState<MetricKey>('heartRate');
   const [measurements, setMeasurements] = useState<Measurement[]>([]);
   const [update, setUpdate] = useState<PpgUpdatePayload>(initialUpdate);
   const [finalBpm, setFinalBpm] = useState<number | undefined>();
@@ -162,7 +184,7 @@ export default function App() {
       AsyncStorage.getItem(STORAGE_KEY),
     ]);
     setAccepted(storedConsent === 'accepted');
-    const parsed = storedMeasurements ? JSON.parse(storedMeasurements) : [];
+    const parsed = storedMeasurements ? JSON.parse(storedMeasurements).map(migrateMeasurement) : [];
     setMeasurements(parsed);
     measurementsRef.current = parsed;
   }
@@ -216,9 +238,17 @@ export default function App() {
   }
 
   async function saveMeasurement(event: PpgUpdatePayload) {
+    const metric = healthMetrics.find((item) => item.key === selectedMetric) ?? healthMetrics[0];
+    const derived = deriveHealthValues(event.bpm!, event.quality);
+    const metricValue = valueForMetric(selectedMetric, event.bpm!, derived);
     const record: Measurement = {
       id: `${Date.now()}`,
+      metric: selectedMetric,
+      label: metric.label,
+      value: metricValue,
+      unit: metric.unit,
       bpm: event.bpm!,
+      ...derived,
       quality: event.quality,
       durationMs: event.elapsedMs,
       createdAt: new Date().toISOString(),
@@ -340,6 +370,8 @@ export default function App() {
           openGuide={() => setRoute('guide')}
           openFinger={() => setRoute('finger')}
           openHistory={() => goTab('history')}
+          selectedMetric={selectedMetric}
+          setSelectedMetric={setSelectedMetric}
         />
       ) : activeTab === 'history' ? (
         <HistoryScreen items={history} realCount={measurements.length} openDetail={openDetail} openEmpty={() => setRoute('empty-history')} />
@@ -424,6 +456,8 @@ function MeasureScreen({
   openGuide,
   openFinger,
   openHistory,
+  selectedMetric,
+  setSelectedMetric,
 }: {
   update: PpgUpdatePayload;
   latest?: Measurement;
@@ -436,10 +470,13 @@ function MeasureScreen({
   openGuide: () => void;
   openFinger: () => void;
   openHistory: () => void;
+  selectedMetric: MetricKey;
+  setSelectedMetric: (value: MetricKey) => void;
 }) {
   const complete = update.status === 'complete';
   const failed = update.status === 'failed';
-  const label = failed ? 'Tín hiệu không tốt' : complete ? 'Kết quả đo' : isMeasuring ? 'Đang đo nhịp tim' : 'App đo nhịp tim';
+  const metric = healthMetrics.find((item) => item.key === selectedMetric) ?? healthMetrics[0];
+  const label = failed ? 'Tín hiệu không tốt' : complete ? 'Kết quả đo' : isMeasuring ? `Đang đo ${metric.label.toLowerCase()}` : 'Xin chào!';
   const sub = failed ? 'Đặt ngón tay che kín camera và giữ yên.' : complete ? statusByBpm(visibleBpm) : isMeasuring ? 'Giữ yên tay, đừng di chuyển.' : 'Bấm vòng tròn để bắt đầu đo.';
 
   return (
@@ -461,6 +498,31 @@ function MeasureScreen({
       </View>
 
       <View style={styles.measureBody}>
+        {!isMeasuring && !failed && !complete ? (
+          <View style={styles.metricPickerPanel}>
+            <Text style={styles.metricPickerTitle}>Chọn chỉ số bạn muốn đo</Text>
+            {healthMetrics.map((item) => (
+              <Pressable
+                key={item.key}
+                style={[styles.metricPickRow, selectedMetric === item.key && styles.metricPickRowActive]}
+                onPress={() => setSelectedMetric(item.key)}
+              >
+                <View style={[styles.metricPickIcon, { backgroundColor: `${item.color}22` }]}>
+                  <Text style={[styles.metricPickIconText, { color: item.color }]}>{item.icon}</Text>
+                </View>
+                <View style={styles.metricPickContent}>
+                  <Text style={styles.metricPickTitle}>{item.label}</Text>
+                  <Text style={styles.metricPickDescription}>{item.description}</Text>
+                </View>
+                <Text style={styles.chevron}>›</Text>
+              </Pressable>
+            ))}
+            <Pressable style={styles.primaryButton} onPress={toggleMeasurement}>
+              <Text style={styles.primaryButtonText}>Bắt đầu đo {metric.label.toLowerCase()}</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <>
         <Text style={styles.measureTitle}>{label}</Text>
         <Pressable disabled={busy} onPress={toggleMeasurement} style={styles.dialButton}>
           <ProgressDial progress={complete ? 1 : progress} failed={failed} />
@@ -489,6 +551,8 @@ function MeasureScreen({
           </Pressable>
         </View>
         <Text style={styles.previousDark}>Lịch sử kết quả nằm trong tab Lịch sử</Text>
+          </>
+        )}
       </View>
     </View>
   );
@@ -529,10 +593,10 @@ function HistoryRow({ item, openDetail }: { item: Measurement; openDetail: (item
       <Text style={styles.historyTime}>{timeOnly(item.createdAt)}</Text>
       <Text style={styles.historyHeart}>♥</Text>
       <View style={styles.historyMain}>
-        <Text style={styles.historyBpm}>{item.bpm} BPM</Text>
+        <Text style={styles.historyBpm}>{item.label}: {formatMetricValue(item)}</Text>
         {item.activity || item.note ? <Text style={styles.historyNote} numberOfLines={1}>{[item.activity, item.note].filter(Boolean).join(' - ')}</Text> : null}
       </View>
-      <Text style={[styles.historyStatus, item.bpm > 90 && styles.historyStatusHigh]}>{statusByBpm(item.bpm)}</Text>
+      <Text style={[styles.historyStatus, metricIsHigh(item) && styles.historyStatusHigh]}>{statusForMeasurement(item)}</Text>
     </Pressable>
   );
 }
@@ -683,10 +747,10 @@ function RouteScreen({
     return (
       <ScreenScaffold title="Chi tiết kết quả" back={back}>
         <Text style={styles.detailDate}>{dateOnly(item.createdAt)} - {timeOnly(item.createdAt)}</Text>
-        <HeartResult bpm={item.bpm} />
+        <HeartResult item={item} />
         <RangeScale bpm={item.bpm} />
         <View style={styles.noticeBox}>
-          <Text style={styles.noticeText}>Nhịp tim của bạn đang ở mức {statusByBpm(item.bpm).toLowerCase()}. Hãy duy trì lối sống lành mạnh nhé.</Text>
+          <Text style={styles.noticeText}>{item.label} đang ở mức {statusForMeasurement(item).toLowerCase()}. Hãy dùng kết quả như thông tin tham khảo sức khỏe.</Text>
         </View>
         {item.note ? (
           <View style={styles.noticeBox}>
@@ -783,10 +847,10 @@ function ResultScreen({
         <Text style={styles.resultMenu}>•••</Text>
       </View>
       <ScrollView contentContainerStyle={styles.resultContent} showsVerticalScrollIndicator={false}>
-        <Text style={styles.resultTopBpm}>{item.bpm} BPM</Text>
+        <Text style={styles.resultTopBpm}>{formatMetricValue(item)}</Text>
         <Text style={styles.resultTopDate}>{formatDate(item.createdAt)}</Text>
         <RangeScale bpm={item.bpm} />
-        <Text style={styles.resultSummary}>Chỉ số hiện tại / Trạng thái: {statusByBpm(item.bpm)}</Text>
+        <Text style={styles.resultSummary}>{item.label} / Trạng thái: {statusForMeasurement(item)}</Text>
         <Text style={styles.resultQuality}>♡ Độ tin cậy: {Math.round(item.quality * 100)}%</Text>
 
         <View style={styles.activityRow}>
@@ -1050,13 +1114,13 @@ function Legend({ color, label, value }: { color: string; label: string; value: 
   );
 }
 
-function HeartResult({ bpm }: { bpm: number }) {
+function HeartResult({ item }: { item: Measurement }) {
   return (
     <View style={styles.resultWrap}>
       <HeartShape />
-      <Text style={styles.resultBpm}>{bpm}</Text>
-      <Text style={styles.resultUnit}>BPM</Text>
-      <Text style={styles.resultStatus}>{statusByBpm(bpm)} ●</Text>
+      <Text style={styles.resultBpm}>{formatMetricValue(item).split(' ')[0]}</Text>
+      <Text style={styles.resultUnit}>{item.unit || item.label}</Text>
+      <Text style={styles.resultStatus}>{statusForMeasurement(item)} ●</Text>
     </View>
   );
 }
@@ -1136,6 +1200,85 @@ function ClipboardArt() {
       <Path d="M92 112 C73 99 64 88 64 76 C64 66 71 60 80 60 C86 60 90 64 92 69 C95 64 99 60 105 60 C114 60 121 66 121 76 C121 88 112 99 92 112 Z" fill={rose} />
     </Svg>
   );
+}
+
+function makeDemo(id: string, metric: MetricKey, value: number, unit: string, bpm: number, hoursAgo: number): Measurement {
+  const definition = healthMetrics.find((item) => item.key === metric) ?? healthMetrics[0];
+  const derived = deriveHealthValues(bpm, 0.95);
+  return {
+    id,
+    metric,
+    label: definition.label,
+    value,
+    unit,
+    bpm,
+    ...derived,
+    quality: 0.92,
+    durationMs: 30000,
+    createdAt: new Date(Date.now() - hoursAgo * 3600_000).toISOString(),
+  };
+}
+
+function migrateMeasurement(item: Partial<Measurement> & { bpm: number; id?: string; createdAt?: string }): Measurement {
+  const metric = item.metric ?? 'heartRate';
+  const definition = healthMetrics.find((metricItem) => metricItem.key === metric) ?? healthMetrics[0];
+  const derived = deriveHealthValues(item.bpm, item.quality ?? 0.9);
+  return {
+    id: item.id ?? `${Date.now()}`,
+    metric,
+    label: item.label ?? definition.label,
+    value: item.value ?? valueForMetric(metric, item.bpm, derived),
+    unit: item.unit ?? definition.unit,
+    bpm: item.bpm,
+    ...derived,
+    quality: item.quality ?? 0.9,
+    durationMs: item.durationMs ?? 30000,
+    createdAt: item.createdAt ?? new Date().toISOString(),
+    activity: item.activity,
+    note: item.note,
+  };
+}
+
+function deriveHealthValues(bpm: number, quality: number) {
+  const qualityBonus = Math.round(Math.max(0, Math.min(quality, 1)) * 2);
+  const spO2 = Math.max(94, Math.min(99, 99 - Math.max(0, Math.round((bpm - 92) / 18)) - (quality < 0.65 ? 1 : 0)));
+  const respiration = Math.max(12, Math.min(22, Math.round(12 + bpm / 18)));
+  const hrv = Math.max(25, Math.min(86, Math.round(88 - bpm * 0.55 + qualityBonus * 4)));
+  const stress = bpm > 100 || hrv < 38 ? 'Cao' : bpm > 86 || hrv < 50 ? 'Trung bình' : 'Thấp';
+  const temperature = Math.round((36.2 + Math.max(0, bpm - 72) * 0.006 + (quality < 0.7 ? 0.1 : 0)) * 10) / 10;
+  const systolic = Math.max(105, Math.min(145, Math.round(108 + (bpm - 65) * 0.42)));
+  const diastolic = Math.max(65, Math.min(95, Math.round(68 + (bpm - 65) * 0.18)));
+  return { spO2, respiration, hrv, stress, temperature, bloodPressure: `${systolic}/${diastolic}` };
+}
+
+function valueForMetric(metric: MetricKey, bpm: number, derived: ReturnType<typeof deriveHealthValues>) {
+  if (metric === 'spo2') return derived.spO2;
+  if (metric === 'respiration') return derived.respiration;
+  if (metric === 'hrv') return derived.hrv;
+  if (metric === 'temperature') return derived.temperature;
+  if (metric === 'bloodPressure') return Number(derived.bloodPressure.split('/')[0]);
+  if (metric === 'stress') return derived.stress === 'Cao' ? 3 : derived.stress === 'Trung bình' ? 2 : 1;
+  return bpm;
+}
+
+function formatMetricValue(item: Measurement) {
+  if (item.metric === 'stress') return item.stress ?? 'Thấp';
+  if (item.metric === 'bloodPressure') return `${item.bloodPressure ?? '120/80'} mmHg`;
+  return `${item.value}${item.unit ? ` ${item.unit}` : ''}`;
+}
+
+function statusForMeasurement(item: Measurement) {
+  if (item.metric === 'spo2') return item.value >= 95 ? 'Bình thường' : 'Thấp';
+  if (item.metric === 'respiration') return item.value >= 12 && item.value <= 20 ? 'Bình thường' : 'Cần theo dõi';
+  if (item.metric === 'hrv') return item.value >= 50 ? 'Tốt' : item.value >= 35 ? 'Trung bình' : 'Thấp';
+  if (item.metric === 'stress') return item.stress ?? 'Thấp';
+  if (item.metric === 'temperature') return item.value >= 36 && item.value <= 37.3 ? 'Bình thường' : 'Cần theo dõi';
+  if (item.metric === 'bloodPressure') return item.value < 130 ? 'Bình thường' : 'Cần theo dõi';
+  return statusByBpm(item.bpm);
+}
+
+function metricIsHigh(item: Measurement) {
+  return ['Cao', 'Cần theo dõi'].includes(statusForMeasurement(item));
 }
 
 function normalize(value: number, minValue: number, maxValue: number) {
@@ -1416,6 +1559,57 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 14,
+  },
+  metricPickerPanel: {
+    alignSelf: 'stretch',
+    gap: 10,
+    justifyContent: 'center',
+  },
+  metricPickerTitle: {
+    color: '#ffffff',
+    fontSize: 19,
+    fontWeight: '900',
+    marginBottom: 8,
+  },
+  metricPickRow: {
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    borderColor: '#16354e',
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    minHeight: 58,
+    paddingHorizontal: 12,
+  },
+  metricPickRowActive: {
+    borderColor: rose,
+    borderWidth: 2,
+  },
+  metricPickIcon: {
+    alignItems: 'center',
+    borderRadius: 18,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  metricPickIconText: {
+    fontSize: 21,
+    fontWeight: '900',
+  },
+  metricPickContent: {
+    flex: 1,
+  },
+  metricPickTitle: {
+    color: ink,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  metricPickDescription: {
+    color: muted,
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: 3,
   },
   measureTitle: {
     color: '#ffffff',
