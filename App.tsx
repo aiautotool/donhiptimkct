@@ -1,6 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Camera } from 'expo-camera';
+import * as FileSystem from 'expo-file-system/legacy';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+import * as Sharing from 'expo-sharing';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Svg, { Circle, Line, Path, Polyline, Rect } from 'react-native-svg';
@@ -42,6 +44,7 @@ type Measurement = {
 type MetricKey = 'heartRate' | 'spo2' | 'respiration' | 'hrv' | 'stress';
 type TabKey = 'measure' | 'history' | 'stats' | 'settings';
 type RouteKey = 'main' | 'guide' | 'finger' | 'result' | 'detail' | 'reminder' | 'export' | 'empty-history';
+type DebugEntry = { at: string; code: string; data?: unknown };
 
 const STORAGE_KEY = 'donhiptim.measurements.v2';
 const CONSENT_KEY = 'donhiptim.consent.v1';
@@ -55,6 +58,8 @@ const ink = '#111827';
 const muted = '#667085';
 const line = '#e8edf3';
 const KEEP_AWAKE_TAG = 'heart-rate-measurement';
+const DEBUG_MODE = true;
+const LOG_KEY = 'donhiptim.debug.logs.v1';
 
 const healthMetrics: { key: MetricKey; label: string; short: string; unit: string; icon: string; color: string; description: string }[] = [
   { key: 'heartRate', label: 'Nhịp tim', short: 'Nhịp tim (BPM)', unit: 'BPM', icon: '♥', color: rose, description: 'Đo nhịp tim từ tín hiệu camera.' },
@@ -98,11 +103,15 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [reminderOn, setReminderOn] = useState(false);
   const [themeLight, setThemeLight] = useState(true);
+  const [debugError, setDebugError] = useState<string | undefined>();
+  const [debugLogs, setDebugLogs] = useState<DebugEntry[]>([]);
   const measurementsRef = useRef<Measurement[]>([]);
+  const debugLogsRef = useRef<DebugEntry[]>([]);
   const selectedMetricRef = useRef<MetricKey>('heartRate');
   const failResetRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const lastGoodUpdateRef = useRef<PpgUpdatePayload | undefined>(undefined);
   const measurementSavedRef = useRef(false);
+  const routeRef = useRef<RouteKey>('main');
 
   useEffect(() => {
     void bootstrap();
@@ -113,11 +122,29 @@ export default function App() {
   }, [measurements]);
 
   useEffect(() => {
+    debugLogsRef.current = debugLogs;
+  }, [debugLogs]);
+
+  useEffect(() => {
     selectedMetricRef.current = selectedMetric;
   }, [selectedMetric]);
 
   useEffect(() => {
+    routeRef.current = route;
+  }, [route]);
+
+  useEffect(() => {
     const subscription = HeartRatePpgModule.addListener('onPpgUpdate', (event: PpgUpdatePayload) => {
+      void appendDebugLog('PPG_EVENT', {
+        status: event.status,
+        bpm: event.bpm,
+        progress: event.progress,
+        quality: event.quality,
+        elapsedMs: event.elapsedMs,
+        metric: selectedMetricRef.current,
+        route: routeRef.current,
+        message: event.message,
+      });
       if (event.status !== 'failed' && failResetRef.current) {
         clearTimeout(failResetRef.current);
         failResetRef.current = undefined;
@@ -135,7 +162,7 @@ export default function App() {
         setFinalBpm(event.bpm);
         setLiveBpm(undefined);
         lastGoodUpdateRef.current = event;
-        void saveMeasurement(event);
+        completeMeasurement(event);
       }
       if (event.status === 'failed' || event.status === 'stopped') {
         setLiveBpm(undefined);
@@ -144,6 +171,7 @@ export default function App() {
         }
       }
       if (event.status === 'failed') {
+        showDebugError('PPG_FAILED', event);
         failResetRef.current = setTimeout(() => {
           setUpdate((current) => current.status === 'failed' ? initialUpdate : current);
           failResetRef.current = undefined;
@@ -188,14 +216,18 @@ export default function App() {
   }, [history]);
 
   async function bootstrap() {
-    const [storedConsent, storedMeasurements] = await Promise.all([
+    const [storedConsent, storedMeasurements, storedLogs] = await Promise.all([
       AsyncStorage.getItem(CONSENT_KEY),
       AsyncStorage.getItem(STORAGE_KEY),
+      AsyncStorage.getItem(LOG_KEY),
     ]);
     setAccepted(storedConsent === 'accepted');
     const parsed = storedMeasurements ? JSON.parse(storedMeasurements).map(migrateMeasurement) : [];
     setMeasurements(parsed);
     measurementsRef.current = parsed;
+    const parsedLogs = storedLogs ? JSON.parse(storedLogs) : [];
+    setDebugLogs(parsedLogs);
+    debugLogsRef.current = parsedLogs;
   }
 
   async function finishOnboarding() {
@@ -210,6 +242,7 @@ export default function App() {
     setLiveBpm(undefined);
     setPendingNoteId(undefined);
     setPendingResult(undefined);
+    setDebugError(undefined);
     lastGoodUpdateRef.current = undefined;
     measurementSavedRef.current = false;
     setNoteText('');
@@ -218,18 +251,24 @@ export default function App() {
     try {
       const permission = await Camera.requestCameraPermissionsAsync();
       if (!permission.granted) {
-        setUpdate({ ...initialUpdate, status: 'failed', message: 'Chưa có quyền camera.' });
+        const failed = { ...initialUpdate, status: 'failed' as const, message: 'Chưa có quyền camera.' };
+        setUpdate(failed);
+        showDebugError('CAMERA_PERMISSION_DENIED', failed);
         Alert.alert('Chưa có quyền camera', 'Hãy cấp quyền camera trong Cài đặt để đo nhịp tim.');
         return;
       }
       const available = await HeartRatePpgModule.isAvailableAsync();
       if (!available) {
-        setUpdate({ ...initialUpdate, status: 'failed', message: 'Thiết bị cần camera sau và đèn flash.' });
+        const failed = { ...initialUpdate, status: 'failed' as const, message: 'Thiết bị cần camera sau và đèn flash.' };
+        setUpdate(failed);
+        showDebugError('PPG_UNAVAILABLE', failed);
         Alert.alert('Không tương thích', 'Thiết bị cần camera sau và đèn flash.');
         return;
       }
+      void appendDebugLog('START_MEASUREMENT', { metric: selectedMetricRef.current });
       await HeartRatePpgModule.startMeasurementAsync(30);
     } catch (error) {
+      showDebugError('START_EXCEPTION', errorToText(error));
       Alert.alert('Không bắt đầu được', error instanceof Error ? error.message : 'Có lỗi khi mở camera.');
     } finally {
       setBusy(false);
@@ -249,9 +288,10 @@ export default function App() {
       setUpdate(completed);
       setFinalBpm(lastGood.bpm);
       setLiveBpm(undefined);
-      await saveMeasurement(completed);
+      completeMeasurement(completed);
       return;
     }
+    void appendDebugLog('STOP_MEASUREMENT', { hasLastGood: Boolean(lastGood), saved: measurementSavedRef.current });
     await HeartRatePpgModule.stopMeasurementAsync();
   }
 
@@ -264,7 +304,7 @@ export default function App() {
     }
   }
 
-  async function saveMeasurement(event: PpgUpdatePayload) {
+  function completeMeasurement(event: PpgUpdatePayload) {
     if (measurementSavedRef.current || !event.bpm) return;
     measurementSavedRef.current = true;
     const metricKey = selectedMetricRef.current;
@@ -291,8 +331,42 @@ export default function App() {
     setPendingNoteId(record.id);
     setNoteText('');
     setActivity('Sau tập');
+    setActiveTab('measure');
     setRoute('result');
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    void appendDebugLog('RESULT_SCREEN_OPENED', {
+      id: record.id,
+      metric: record.metric,
+      value: record.value,
+      unit: record.unit,
+      bpm: record.bpm,
+      route: 'result',
+    });
+  }
+
+  async function appendDebugLog(code: string, data?: unknown) {
+    const entry: DebugEntry = { at: new Date().toISOString(), code, data };
+    const next = [entry, ...debugLogsRef.current.slice(0, 199)];
+    setDebugLogs(next);
+    debugLogsRef.current = next;
+    await AsyncStorage.setItem(LOG_KEY, JSON.stringify(next));
+  }
+
+  function showDebugError(code: string, data?: unknown) {
+    const message = `${code}\n${safeJson(data)}`;
+    setDebugError(message);
+    void appendDebugLog(code, data);
+  }
+
+  async function shareDebugLog() {
+    const content = debugLogsRef.current.map((entry) => `${entry.at} ${entry.code}\n${safeJson(entry.data)}`).join('\n\n');
+    const uri = `${FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? ''}donhiptim-debug-log.txt`;
+    await FileSystem.writeAsStringAsync(uri, content || 'No logs');
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(uri, { mimeType: 'text/plain', dialogTitle: 'Gửi log app' });
+    } else {
+      Alert.alert('Log app', content || 'No logs');
+    }
   }
 
   async function saveNote() {
@@ -370,6 +444,7 @@ export default function App() {
           history={history}
           reminderOn={reminderOn}
           setReminderOn={setReminderOn}
+          shareDebugLog={() => void shareDebugLog()}
           pendingResult={pendingResult}
           values={signalHistory}
           noteText={noteText}
@@ -407,6 +482,8 @@ export default function App() {
           openHistory={() => goTab('history')}
           selectedMetric={selectedMetric}
           setSelectedMetric={setSelectedMetric}
+          debugError={debugError}
+          shareDebugLog={() => void shareDebugLog()}
         />
       ) : activeTab === 'history' ? (
         <HistoryScreen items={history} realCount={measurements.length} openDetail={openDetail} openEmpty={() => setRoute('empty-history')} />
@@ -425,6 +502,7 @@ export default function App() {
             setOnboardPage(0);
             setAccepted(false);
           }}
+          shareDebugLog={() => void shareDebugLog()}
         />
       )}
       <BottomTabs active={activeTab} goTab={goTab} />
@@ -493,6 +571,8 @@ function MeasureScreen({
   openHistory,
   selectedMetric,
   setSelectedMetric,
+  debugError,
+  shareDebugLog,
 }: {
   update: PpgUpdatePayload;
   latest?: Measurement;
@@ -507,6 +587,8 @@ function MeasureScreen({
   openHistory: () => void;
   selectedMetric: MetricKey;
   setSelectedMetric: (value: MetricKey) => void;
+  debugError?: string;
+  shareDebugLog: () => void;
 }) {
   const complete = update.status === 'complete';
   const failed = update.status === 'failed';
@@ -599,6 +681,15 @@ function MeasureScreen({
           </Pressable>
         </View>
         <Text style={styles.previousDark}>Lịch sử kết quả nằm trong tab Lịch sử</Text>
+        {DEBUG_MODE && debugError ? (
+          <View style={styles.debugBox}>
+            <Text style={styles.debugTitle}>DEBUG ERROR</Text>
+            <Text style={styles.debugText}>{debugError}</Text>
+            <Pressable style={styles.debugButton} onPress={shareDebugLog}>
+              <Text style={styles.debugButtonText}>Gửi file log TXT</Text>
+            </Pressable>
+          </View>
+        ) : null}
           </>
         )}
       </View>
@@ -683,6 +774,7 @@ function SettingsScreen({
   openReminder,
   openExport,
   resetOnboarding,
+  shareDebugLog,
 }: {
   reminderOn: boolean;
   setReminderOn: (value: boolean) => void;
@@ -692,6 +784,7 @@ function SettingsScreen({
   openReminder: () => void;
   openExport: () => void;
   resetOnboarding: () => void;
+  shareDebugLog: () => void;
 }) {
   return (
     <ScreenScaffold title="Cài đặt">
@@ -705,6 +798,7 @@ function SettingsScreen({
       <SettingsRow icon="🌐" title="Ngôn ngữ" value="Tiếng Việt" />
       <SettingsRow icon="?" title="Hướng dẫn sử dụng" onPress={openGuide} />
       <SettingsRow icon="⇪" title="Xuất dữ liệu" onPress={openExport} />
+      <SettingsRow icon="!" title="Gửi log lỗi" value="TXT" onPress={shareDebugLog} />
       <SettingsRow icon="▣" title="Chính sách bảo mật" value="Đã lưu cục bộ" />
       <SettingsRow icon="i" title="Giới thiệu ứng dụng" value="Phiên bản 1.0.0" />
       <Pressable style={styles.secondaryButton} onPress={resetOnboarding}>
@@ -720,6 +814,7 @@ function RouteScreen({
   history,
   reminderOn,
   setReminderOn,
+  shareDebugLog,
   pendingResult,
   values,
   noteText,
@@ -736,6 +831,7 @@ function RouteScreen({
   history: Measurement[];
   reminderOn: boolean;
   setReminderOn: (value: boolean) => void;
+  shareDebugLog: () => void;
   pendingResult?: Measurement;
   values: number[];
   noteText: string;
@@ -843,6 +939,7 @@ function RouteScreen({
         <SettingsRow icon="□" title="Xuất PDF" onPress={() => Alert.alert('Xuất dữ liệu', 'Chức năng xuất PDF sẽ dùng dữ liệu lịch sử đo.')} />
         <SettingsRow icon="▤" title="Xuất Excel" onPress={() => Alert.alert('Xuất dữ liệu', 'Chức năng xuất Excel đã có màn hình sẵn sàng.')} />
         <SettingsRow icon="≡" title="Xuất CSV" onPress={() => Alert.alert('Xuất dữ liệu', 'Chức năng xuất CSV đã có màn hình sẵn sàng.')} />
+        <SettingsRow icon="!" title="Gửi log lỗi" value="TXT" onPress={shareDebugLog} />
       </ScreenScaffold>
     );
   }
@@ -1369,6 +1466,20 @@ function dateOnly(value: string) {
   return new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(value));
 }
 
+function errorToText(error: unknown) {
+  if (error instanceof Error) return `${error.name}: ${error.message}\n${error.stack ?? ''}`;
+  return safeJson(error);
+}
+
+function safeJson(value: unknown) {
+  try {
+    if (typeof value === 'string') return value;
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 const styles = StyleSheet.create({
   resultPage: {
     flex: 1,
@@ -1836,6 +1947,39 @@ const styles = StyleSheet.create({
     fontSize: 13,
     marginTop: 16,
     textAlign: 'center',
+  },
+  debugBox: {
+    alignSelf: 'stretch',
+    backgroundColor: '#1f2937',
+    borderColor: '#ef4444',
+    borderRadius: 10,
+    borderWidth: 1,
+    marginTop: 12,
+    padding: 10,
+  },
+  debugTitle: {
+    color: '#fca5a5',
+    fontSize: 12,
+    fontWeight: '900',
+    marginBottom: 6,
+  },
+  debugText: {
+    color: '#ffffff',
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  debugButton: {
+    alignItems: 'center',
+    backgroundColor: '#ef4444',
+    borderRadius: 8,
+    height: 38,
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  debugButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '900',
   },
   bottomTabs: {
     alignItems: 'center',
