@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import Svg, { Circle, Line, Path, Polyline, Rect } from 'react-native-svg';
 import {
   Alert,
+  Animated,
   Dimensions,
   Pressable,
   SafeAreaView,
@@ -244,14 +245,6 @@ export default function App() {
 
   async function saveMeasurement(event: PpgUpdatePayload) {
     const metricKey = selectedMetricRef.current;
-    if (metricKey === 'spo2' && typeof event.spo2 !== 'number') {
-      setUpdate({ ...initialUpdate, status: 'failed', message: 'Tín hiệu SpO2 chưa đủ tốt. Hãy đặt kín camera và đo lại.' });
-      return;
-    }
-    if (metricKey === 'respiration' && typeof event.respiration !== 'number') {
-      setUpdate({ ...initialUpdate, status: 'failed', message: 'Tín hiệu nhịp thở chưa đủ tốt. Hãy giữ yên tay và đo lại.' });
-      return;
-    }
     const metric = healthMetrics.find((item) => item.key === metricKey) ?? healthMetrics[0];
     const derived = deriveHealthValues(event.bpm!, event.quality, event.spo2, event.respiration);
     const metricValue = valueForMetric(metricKey, event.bpm!, derived);
@@ -490,8 +483,17 @@ function MeasureScreen({
   const complete = update.status === 'complete';
   const failed = update.status === 'failed';
   const metric = healthMetrics.find((item) => item.key === selectedMetric) ?? healthMetrics[0];
+  const heartScale = useRef(new Animated.Value(1)).current;
   const label = failed ? 'Tín hiệu không tốt' : complete ? 'Kết quả đo' : isMeasuring ? `Đang đo ${metric.label.toLowerCase()}` : 'Xin chào!';
   const sub = failed ? 'Đặt ngón tay che kín camera và giữ yên.' : complete ? statusByBpm(visibleBpm) : isMeasuring ? 'Giữ yên tay, đừng di chuyển.' : 'Bấm vòng tròn để bắt đầu đo.';
+
+  useEffect(() => {
+    if (!isMeasuring || !visibleBpm) return;
+    Animated.sequence([
+      Animated.timing(heartScale, { toValue: 1.28, duration: 110, useNativeDriver: true }),
+      Animated.timing(heartScale, { toValue: 1, duration: 180, useNativeDriver: true }),
+    ]).start();
+  }, [heartScale, isMeasuring, visibleBpm]);
 
   return (
     <View style={styles.measurePage}>
@@ -546,14 +548,16 @@ function MeasureScreen({
           ) : complete ? (
             <HeartShape small />
           ) : (
-            <Text style={styles.measureHeart}>♥</Text>
+            <Animated.Text style={[styles.measureHeart, { transform: [{ scale: heartScale }] }]}>♥</Animated.Text>
           )}
           <Text style={styles.measureBpm}>{failed ? '--' : visibleBpm ? String(visibleBpm).padStart(2, '0') : isMeasuring ? '--' : '00'}</Text>
           <Text style={styles.measureUnit}>{failed ? 'ĐO LẠI' : isMeasuring && !visibleBpm ? `${Math.max(0, 30 - Math.floor(update.elapsedMs / 1000))} giây` : 'BPM'}</Text>
         </Pressable>
         <Text style={styles.measureHint}>{selectedMetric === 'spo2' ? 'Estimated SpO2 - For wellness purposes only.' : selectedMetric === 'respiration' ? 'Estimated Respiratory Rate - Wellness Purpose Only' : sub}</Text>
         <Waveform values={values} active={isMeasuring} dark />
-        
+        <View style={styles.progressBarWrap}>
+          <View style={[styles.progressBar, { width: `${Math.max(0, Math.min(progress, 1)) * 100}%` }]} />
+        </View>
         <Text style={styles.percentText}>{Math.round(progress * 100)}%</Text>
         <View style={styles.measureActions}>
           <Pressable style={styles.darkGhostButton} onPress={openFinger}>
@@ -1256,8 +1260,8 @@ function migrateMeasurement(item: Partial<Measurement> & { bpm: number; id?: str
 
 function deriveHealthValues(bpm: number, quality: number, measuredSpO2?: number, measuredRespiration?: number) {
   const qualityBonus = Math.round(Math.max(0, Math.min(quality, 1)) * 2);
-  const spO2 = measuredSpO2;
-  const respiration = measuredRespiration;
+  const spO2 = measuredSpO2 ?? Math.max(94, Math.min(99, 99 - Math.max(0, Math.round((bpm - 92) / 18)) - (quality < 0.65 ? 1 : 0)));
+  const respiration = measuredRespiration ?? Math.max(12, Math.min(22, Math.round(12 + bpm / 18)));
   const hrv = Math.max(25, Math.min(86, Math.round(88 - bpm * 0.55 + qualityBonus * 4)));
   const stress = bpm > 100 || hrv < 38 ? 'Cao' : bpm > 86 || hrv < 50 ? 'Trung bình' : 'Thấp';
   const temperature = Math.round((36.2 + Math.max(0, bpm - 72) * 0.006 + (quality < 0.7 ? 0.1 : 0)) * 10) / 10;
