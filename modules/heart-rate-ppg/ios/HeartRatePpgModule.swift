@@ -3,7 +3,9 @@ import ExpoModulesCore
 import UIKit
 
 public class HeartRatePpgModule: Module {
+  // Session camera lấy frame từ camera sau để phân tích PPG.
   private let session = AVCaptureSession()
+  // Queue tuần tự giúp xử lý frame đúng thứ tự và không chặn JS thread.
   private let captureQueue = DispatchQueue(label: "heart-rate-ppg.capture")
   private let frameDelegate = PpgFrameDelegate()
   private var activeDevice: AVCaptureDevice?
@@ -21,6 +23,7 @@ public class HeartRatePpgModule: Module {
   private var beatPlayer: AVAudioPlayer?
 
   public func definition() -> ModuleDefinition {
+    // Định nghĩa bridge Expo: JS gọi hàm async và nhận event native tại đây.
     Name("HeartRatePpg")
 
     Events("onPpgUpdate", "onScreenshotTaken")
@@ -54,6 +57,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func startScreenshotObserver() {
+    // Notification chụp màn hình kích hoạt JS xuất log, không cần nút debug trên UI.
     guard screenshotObserver == nil else { return }
     screenshotObserver = NotificationCenter.default.addObserver(
       forName: UIApplication.userDidTakeScreenshotNotification,
@@ -74,6 +78,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func playBeat() {
+    // JS điều khiển thời điểm; native chỉ phát một tiếng tít ngắn.
     DispatchQueue.main.async {
       do {
         let audioSession = AVAudioSession.sharedInstance()
@@ -92,6 +97,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private static func makeBeepWavData() -> Data {
+    // Tạo WAV rất nhỏ trong bộ nhớ để app không cần file âm thanh đi kèm.
     let sampleRate = 44_100
     let duration = 0.085
     let frequency = 1_120.0
@@ -123,6 +129,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func start(durationSeconds: Double) throws {
+    // Kiểm tra camera/flash, reset buffer rồi bắt đầu capture.
     guard !isRunning else { return }
     guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
       send(status: "failed", elapsedMs: 0, progress: 0, quality: 0, message: "Can cap quyen camera de do nhip tim.")
@@ -156,6 +163,7 @@ public class HeartRatePpgModule: Module {
         }
 
         let output = AVCaptureVideoDataOutput()
+        // Frame BGRA cho phép đọc RGB trực tiếp để lấy tín hiệu PPG ở đầu ngón tay.
         output.alwaysDiscardsLateVideoFrames = true
         output.videoSettings = [
           kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
@@ -170,6 +178,7 @@ public class HeartRatePpgModule: Module {
         self.session.commitConfiguration()
 
         try device.lockForConfiguration()
+        // FPS cố định giúp ước tính BPM theo tần số ổn định hơn.
         device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 30)
         device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 30)
         if device.isExposureModeSupported(.continuousAutoExposure) {
@@ -194,6 +203,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func startTorchKeepAlive() {
+    // Bật lại flash nếu iOS tự tắt thoáng qua trong lúc capture.
     torchTimer?.cancel()
     let timer = DispatchSource.makeTimerSource(queue: captureQueue)
     timer.schedule(deadline: .now() + 0.25, repeating: 0.5)
@@ -213,6 +223,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func setTorch(on: Bool) throws {
+    // Dùng mức flash thấp hơn để giảm nóng nhưng vẫn giữ đủ tín hiệu.
     guard let device = activeDevice, device.hasTorch else { return }
     try device.lockForConfiguration()
     defer { device.unlockForConfiguration() }
@@ -225,6 +236,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func stop(status: String, message: String?) {
+    // Tắt flash/session và gửi trạng thái cuối về JavaScript.
     captureQueue.async {
       self.stopTorchKeepAlive()
       try? self.setTorch(on: false)
@@ -245,6 +257,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func cleanup() {
+    // Đường cleanup nội bộ để giải phóng tài nguyên camera.
     stopTorchKeepAlive()
     try? setTorch(on: false)
     if session.isRunning {
@@ -256,6 +269,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func handleSample(_ sampleBuffer: CMSampleBuffer) {
+    // Luồng mỗi frame: màu ROI -> điểm tin cậy ngón tay -> mẫu tín hiệu -> ước tính live/final.
     guard isRunning, let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
     let elapsed = Date().timeIntervalSince(startedAt)
     let stats = analyzeFrame(in: pixelBuffer)
@@ -268,6 +282,7 @@ public class HeartRatePpgModule: Module {
       samples.removeFirst(samples.count - 1800)
     }
     let detection = fingerDetectionScore(stats: stats, motion: motion)
+    // Điểm tin cậy dùng nhiều yếu tố thay vì ngưỡng cố định để hợp nhiều thiết bị/ánh sáng.
     let fingerDetected = detection.confidence >= 85
     if detection.confidence >= 65 {
       hasSeenFinger = true
@@ -275,6 +290,7 @@ public class HeartRatePpgModule: Module {
     stableFingerFrames = fingerDetected ? stableFingerFrames + 1 : max(0, stableFingerFrames - 2)
     missingFingerFrames = detection.confidence >= 55 ? 0 : missingFingerFrames + 1
     if stableFingerFrames >= 15 {
+      // Sau khi ngón tay ổn định thì khóa AE/AWB để màu đỏ không bị trôi.
       lockCameraControlsIfNeeded()
     }
     let signalUsable = detection.confidence >= 72 || (hasSeenFinger && missingFingerFrames < 180)
@@ -306,6 +322,7 @@ public class HeartRatePpgModule: Module {
     }
 
     if elapsed >= durationSeconds || (elapsed >= 30 && qualityScore() >= 0.82) {
+      // Khi đủ thời gian hoặc tín hiệu đủ tốt, tính kết quả cuối và dọn camera.
       let result = estimateBpm()
       if let bpm = result.bpm, result.quality >= 0.38 {
         let spo2 = estimateSpO2()
@@ -319,6 +336,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func analyzeFrame(in pixelBuffer: CVPixelBuffer) -> (red: Double, green: Double, blue: Double, brightness: Double, variance: Double) {
+    // Chỉ phân tích vùng trung tâm 60% để giảm nhiễu từ viền và che lệch ngón tay.
     CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
     defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
 
@@ -367,6 +385,7 @@ public class HeartRatePpgModule: Module {
     stats: (red: Double, green: Double, blue: Double, brightness: Double, variance: Double),
     motion: Double
   ) -> (confidence: Double, message: String) {
+    // Confidence kết hợp đỏ, bão hòa màu, độ sáng, dao động mạch và chuyển động.
     if stats.brightness > 235 { return (18, "Che kín camera và flash.") }
     if stats.brightness < 18 { return (12, "Bật flash hoặc đặt ngón tay sát hơn.") }
 
@@ -402,6 +421,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func lockCameraControlsIfNeeded() {
+    // Khóa phơi sáng và cân bằng trắng sau khi ổn định để tín hiệu PPG không bị drift.
     guard !cameraControlsLocked, let device = activeDevice else { return }
     do {
       try device.lockForConfiguration()
@@ -419,6 +439,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func qualityScore() -> Double {
+    // Chất lượng tổng hợp từ độ sáng trung bình và biên độ dao động mạch gần đây.
     guard (isFingerDetected() || (hasSeenFinger && missingFingerFrames < 90)), samples.count > 120 else { return 0 }
     let values = samples.suffix(240).map(\.red)
     let mean = values.reduce(0, +) / Double(values.count)
@@ -430,6 +451,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func estimateBpm() -> (bpm: Int?, quality: Double) {
+    // BPM cuối dùng cửa sổ dài hơn live để giảm nhiễu.
     guard isFingerDetected() || (hasSeenFinger && missingFingerFrames < 45) else { return (nil, 0) }
     let result = bpmFromRecentSamples(seconds: 24, final: true)
     guard let bpm = result.bpm else { return (nil, qualityScore() * 0.55) }
@@ -437,6 +459,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func estimateSpO2() -> (spo2: Int?, quality: Double) {
+    // SpO2 chỉ là ước tính wellness từ tỷ lệ AC/DC các kênh màu, không phải oximeter y tế.
     guard isFingerDetected() || (hasSeenFinger && missingFingerFrames < 45) else { return (nil, 0) }
     let lastTime = samples.last?.time ?? 0
     let usable = samples.filter { $0.time >= max(0, lastTime - 24) }
@@ -471,6 +494,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func estimateRespiration() -> (rpm: Int?, quality: Double) {
+    // Nhịp thở được ước tính từ dao động tần số thấp trong tín hiệu PPG.
     guard isFingerDetected() || (hasSeenFinger && missingFingerFrames < 45) else { return (nil, 0) }
     let lastTime = samples.last?.time ?? 0
     let usable = samples.filter { $0.time >= max(0, lastTime - 30) }
@@ -489,6 +513,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func respirationFromValues(_ values: [Double], sampleRate: Double) -> (rpm: Int, quality: Double)? {
+    // Kết hợp phổ tần và tự tương quan để tránh nhận nhầm nhiễu thành nhịp thở.
     let signal = respiratorySignal(values: values, sampleRate: sampleRate)
     guard signal.count > 300, standardDeviation(signal) > 0.00004 else { return nil }
 
@@ -518,6 +543,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func respiratorySignal(values: [Double], sampleRate: Double) -> [Double] {
+    // Lọc bỏ baseline nhanh, giữ thành phần thở chậm.
     let mean = values.reduce(0, +) / Double(max(values.count, 1))
     guard mean > 1 else { return [] }
     let normalized = values.map { ($0 - mean) / mean }
@@ -527,6 +553,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func respiratoryAutocorrelation(signal: [Double], sampleRate: Double) -> (rpm: Int, quality: Double)? {
+    // Tìm chu kỳ lặp trong dải 6-30 nhịp thở/phút.
     let minLag = max(1, Int(sampleRate * 60 / 30))
     let maxLag = min(signal.count - 2, Int(sampleRate * 60 / 6))
     guard maxLag > minLag else { return nil }
@@ -546,6 +573,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func liveBpmEstimate() -> (bpm: Int?, quality: Double) {
+    // BPM realtime dùng cửa sổ ngắn để cập nhật UI nhanh.
     guard isFingerDetected() || (hasSeenFinger && missingFingerFrames < 180) else { return (nil, 0) }
     let result = bpmFromRecentSamples(seconds: 10, final: false)
     guard let bpm = result.bpm else { return (nil, qualityScore()) }
@@ -553,6 +581,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func bpmFromRecentSamples(seconds: Double, final: Bool) -> (bpm: Int?, stability: Double) {
+    // Lấy mẫu gần nhất và thử nhiều kênh màu để chọn kênh có độ ổn định cao nhất.
     let lastTime = samples.last?.time ?? 0
     let usable = samples.filter { $0.time >= max(0, lastTime - seconds) }
     guard usable.count > (final ? 210 : 90) else { return (nil, 0) }
@@ -569,6 +598,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func fusedBpm(values: [Double], sampleRate: Double, final: Bool) -> (bpm: Int?, stability: Double)? {
+    // Hợp nhất FFT, peak detection và autocorrelation; chỉ nhận khi các phương pháp đồng thuận.
     guard values.count > (final ? 210 : 90), sampleRate > 5 else { return nil }
     let signal = preprocessedSignal(values: values, sampleRate: sampleRate)
     guard standardDeviation(signal) > 0.00008 else { return nil }
@@ -594,6 +624,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func preprocessedSignal(values: [Double], sampleRate: Double) -> [Double] {
+    // Làm mượt, khử baseline, chuẩn hóa và áp cửa sổ Hamming trước khi tính BPM.
     let mean = values.reduce(0, +) / Double(max(values.count, 1))
     guard mean > 1 else { return [] }
     let normalized = values.map { ($0 - mean) / mean }
@@ -615,6 +646,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func spectralBpm(signal: [Double], sampleRate: Double, final: Bool) -> (bpm: Int, stability: Double)? {
+    // Quét công suất phổ theo BPM khả dĩ; đỉnh càng nổi bật thì stability càng cao.
     guard signal.count > (final ? 210 : 90), sampleRate > 5, standardDeviation(signal) > 0.00008 else { return nil }
 
     var powers: [Int: Double] = [:]
@@ -653,6 +685,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func peakBpm(signal: [Double], sampleRate: Double, final: Bool) -> (bpm: Int, stability: Double)? {
+    // Tìm đỉnh mạch bằng threshold động rồi đổi khoảng cách đỉnh sang BPM.
     guard signal.count > (final ? 210 : 90), sampleRate > 5 else { return nil }
     let std = standardDeviation(signal)
     guard std > 0.00008 else { return nil }
@@ -682,6 +715,7 @@ public class HeartRatePpgModule: Module {
   }
 
   private func autocorrelationBpm(signal: [Double], sampleRate: Double, final: Bool) -> (bpm: Int, stability: Double)? {
+    // Tìm lag tự tương quan mạnh nhất trong dải nhịp tim hợp lệ.
     guard signal.count > (final ? 210 : 90), sampleRate > 5 else { return nil }
     let minLag = max(1, Int(sampleRate * 60 / 150))
     let maxLag = min(signal.count - 2, Int(sampleRate * 60 / 48))

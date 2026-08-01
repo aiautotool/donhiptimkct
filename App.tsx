@@ -87,6 +87,7 @@ const demoHistory: Measurement[] = [
 ];
 
 export default function App() {
+  // Trạng thái chính của app: onboarding, tab hiện tại, route phụ và chỉ số đang chọn.
   const [accepted, setAccepted] = useState(false);
   const [onboardPage, setOnboardPage] = useState(0);
   const [activeTab, setActiveTab] = useState<TabKey>('measure');
@@ -107,6 +108,7 @@ export default function App() {
   const [themeLight, setThemeLight] = useState(true);
   const [language, setLanguageState] = useState<Language>('vi');
   const [debugLogs, setDebugLogs] = useState<DebugEntry[]>([]);
+  // Ref giữ bản mới nhất cho callback native, tránh phụ thuộc vào vòng render của React.
   const measurementsRef = useRef<Measurement[]>([]);
   const debugLogsRef = useRef<DebugEntry[]>([]);
   const selectedMetricRef = useRef<MetricKey>('heartRate');
@@ -118,27 +120,34 @@ export default function App() {
   const beatBpmRef = useRef<{ previous?: number; current?: number }>({});
 
   useEffect(() => {
+    // Nạp consent, lịch sử đo, log debug và ngôn ngữ khi app khởi động.
     void bootstrap();
   }, []);
 
   useEffect(() => {
+    // Luôn giữ danh sách đo mới nhất để ghi AsyncStorage không bị cũ.
     measurementsRef.current = measurements;
   }, [measurements]);
 
   useEffect(() => {
+    // Luôn giữ log mới nhất để khi chụp màn hình có thể xuất file TXT đúng.
     debugLogsRef.current = debugLogs;
   }, [debugLogs]);
 
   useEffect(() => {
+    // Native dùng ref này để lưu kết quả đúng theo chỉ số người dùng đang chọn.
     selectedMetricRef.current = selectedMetric;
   }, [selectedMetric]);
 
   useEffect(() => {
+    // Log chụp màn hình kèm route hiện tại để dễ biết lỗi xảy ra ở màn nào.
     routeRef.current = route;
   }, [route]);
 
   useEffect(() => {
+    // Listener chính từ native: nhận frame/trạng thái PPG rồi cập nhật UI và lưu kết quả.
     const subscription = HeartRatePpgModule.addListener('onPpgUpdate', (event: PpgUpdatePayload) => {
+      // Lưu mọi cập nhật native để khi chụp màn hình có file log TXT đủ thông tin.
       void appendDebugLog('PPG_EVENT', {
         status: event.status,
         bpm: event.bpm,
@@ -155,14 +164,17 @@ export default function App() {
       }
       setUpdate(event);
       if ((event.status === 'warming' || event.status === 'measuring') && typeof event.signal === 'number') {
+        // Chỉ giữ mẫu sóng gần nhất để biểu đồ nhẹ và không giật.
         setFinalBpm(undefined);
         setSignalHistory((items) => [...items.slice(-58), event.signal!]);
       }
       if ((event.status === 'warming' || event.status === 'measuring') && event.bpm) {
+        // BPM realtime dùng cho số đang đo, hiệu ứng tim đập và tiếng tít theo nhịp.
         setLiveBpm(event.bpm);
         lastGoodUpdateRef.current = event;
       }
       if (event.status === 'complete') {
+        // Có nhánh native complete thiếu BPM, nên lấy lại BPM ổn định gần nhất.
         const completed = completeEventWithFallback(event);
         if (!completed.bpm) {
           showDebugError('COMPLETE_WITHOUT_BPM', { event, lastGood: lastGoodUpdateRef.current });
@@ -177,6 +189,7 @@ export default function App() {
         setLiveBpm(undefined);
         const lastGood = lastGoodUpdateRef.current;
         if (!measurementSavedRef.current && lastGood?.bpm && (lastGood.elapsedMs >= 12000 || event.progress >= 0.9)) {
+          // Nếu người dùng dừng gần cuối, vẫn giữ BPM ổn định cuối cùng để không mất kết quả.
           completeMeasurement({
             ...lastGood,
             status: 'complete',
@@ -190,6 +203,7 @@ export default function App() {
         }
       }
       if (event.status === 'failed') {
+        // Lỗi không hiện trên UI; người dùng chụp màn hình để xuất log TXT.
         showDebugError('PPG_FAILED', event);
         failResetRef.current = setTimeout(() => {
           setUpdate((current) => current.status === 'failed' ? initialUpdate : current);
@@ -204,6 +218,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // iOS bắn event khi chụp màn hình; app tự mở share file log TXT.
     const subscription = HeartRatePpgModule.addListener('onScreenshotTaken', (event: { at: string }) => {
       void (async () => {
         await appendDebugLog('SCREENSHOT_TAKEN', { at: event.at, route: routeRef.current });
@@ -220,6 +235,7 @@ export default function App() {
   const progressValue = Math.max(0, Math.min(update.progress, 1));
 
   useEffect(() => {
+    // Chỉ giữ màn hình sáng trong lúc đang đo.
     if (isMeasuring) {
       void activateKeepAwakeAsync(KEEP_AWAKE_TAG);
     } else {
@@ -231,6 +247,7 @@ export default function App() {
   }, [isMeasuring]);
 
   useEffect(() => {
+    // Lưu BPM hiện tại và trước đó để khoảng tít thay đổi mượt theo số đo mới.
     if (!isMeasuring || selectedMetric !== 'heartRate' || !liveBpm || liveBpm < 40) return;
     const bpm = Math.max(45, Math.min(180, liveBpm));
     beatBpmRef.current = {
@@ -240,6 +257,7 @@ export default function App() {
   }, [isMeasuring, liveBpm, selectedMetric]);
 
   useEffect(() => {
+    // Vòng tít dùng 60000 / trung bình(BPM trước, BPM hiện tại) để tempo không nhảy gắt.
     if (beatTimerRef.current) {
       clearTimeout(beatTimerRef.current);
       beatTimerRef.current = undefined;
@@ -253,6 +271,7 @@ export default function App() {
       if (cancelled) return;
       const { previous, current } = beatBpmRef.current;
       if (!current) {
+        // Chờ có BPM realtime đầu tiên rồi mới phát tiếng tít.
         beatTimerRef.current = setTimeout(scheduleBeat, 180);
         return;
       }
@@ -286,6 +305,7 @@ export default function App() {
   }, [history]);
 
   async function bootstrap() {
+    // Đọc dữ liệu lưu cục bộ cùng lúc để tránh UI cập nhật lệch nhịp lúc mở app.
     const [storedConsent, storedMeasurements, storedLogs, storedLanguage] = await Promise.all([
       AsyncStorage.getItem(CONSENT_KEY),
       AsyncStorage.getItem(STORAGE_KEY),
@@ -303,16 +323,19 @@ export default function App() {
   }
 
   async function finishOnboarding() {
+    // Consent lưu cục bộ, dùng để bỏ qua onboarding ở các lần mở sau.
     await AsyncStorage.setItem(CONSENT_KEY, 'accepted');
     setAccepted(true);
   }
 
   async function changeLanguage(value: Language) {
+    // Lưu ngôn ngữ ngay để giữ lựa chọn sau khi đóng mở app.
     setLanguageState(value);
     await AsyncStorage.setItem(LANGUAGE_KEY, value);
   }
 
   async function startMeasurement() {
+    // Xóa trạng thái tạm trước khi mở camera để kết quả/lỗi cũ không dính sang lần đo mới.
     setBusy(true);
     setUpdate({ ...initialUpdate, status: 'warming' });
     setFinalBpm(undefined);
@@ -327,6 +350,7 @@ export default function App() {
     try {
       const permission = await Camera.requestCameraPermissionsAsync();
       if (!permission.granted) {
+        // Lỗi quyền camera vừa hiện alert vừa được lưu vào log debug.
         const failed = { ...initialUpdate, status: 'failed' as const, message: 'Chưa có quyền camera.' };
         setUpdate(failed);
         showDebugError('CAMERA_PERMISSION_DENIED', failed);
@@ -335,6 +359,7 @@ export default function App() {
       }
       const available = await HeartRatePpgModule.isAvailableAsync();
       if (!available) {
+        // PPG cần camera sau và đèn flash; máy không hỗ trợ sẽ dừng trước khi mở capture native.
         const failed = { ...initialUpdate, status: 'failed' as const, message: 'Thiết bị cần camera sau và đèn flash.' };
         setUpdate(failed);
         showDebugError('PPG_UNAVAILABLE', failed);
@@ -352,6 +377,7 @@ export default function App() {
   }
 
   async function stopMeasurement() {
+    // Dừng thủ công vẫn có thể tạo kết quả nếu đã có BPM ổn định.
     const lastGood = lastGoodUpdateRef.current;
     if (!measurementSavedRef.current && lastGood?.bpm && lastGood.elapsedMs >= 10000 && lastGood.quality >= 0.3) {
       await HeartRatePpgModule.stopMeasurementAsync();
@@ -372,6 +398,7 @@ export default function App() {
   }
 
   async function toggleMeasurement() {
+    // Vòng tròn đo là nút start/stop duy nhất.
     if (busy) return;
     if (isMeasuring) {
       await stopMeasurement();
@@ -381,10 +408,12 @@ export default function App() {
   }
 
   function completeMeasurement(event: PpgUpdatePayload) {
+    // Chặn native gửi complete/stopped nhiều lần làm lưu trùng kết quả.
     if (measurementSavedRef.current || !event.bpm) return;
     measurementSavedRef.current = true;
     const metricKey = selectedMetricRef.current;
     const metric = healthMetrics.find((item) => item.key === metricKey) ?? healthMetrics[0];
+    // Nhịp tim đo trực tiếp; các chỉ số camera hỗ trợ khác được suy ra từ cùng tín hiệu PPG.
     const derived = deriveHealthValues(event.bpm, event.quality, event.spo2, event.respiration);
     const metricValue = valueForMetric(metricKey, event.bpm, derived);
     const record: Measurement = {
@@ -400,6 +429,7 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
     const next = [record, ...measurementsRef.current].slice(0, 100);
+    // Giới hạn lịch sử cục bộ để AsyncStorage nhỏ và đọc ghi nhanh.
     setMeasurements(next);
     measurementsRef.current = next;
     setSelected(record);
@@ -408,6 +438,7 @@ export default function App() {
     setNoteText('');
     setActivity('Sau tập');
     setActiveTab('measure');
+    // Ép màn ghi chú/kết quả render trước khi status native muộn có thể kéo app về màn đo.
     setRoute('result');
     void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     void appendDebugLog('RESULT_SCREEN_OPENED', {
@@ -421,6 +452,7 @@ export default function App() {
   }
 
   function completeEventWithFallback(event: PpgUpdatePayload): PpgUpdatePayload {
+    // Native có thể emit complete sau cleanup; hàm này khôi phục BPM hợp lệ mới nhất.
     const lastGood = lastGoodUpdateRef.current;
     if (event.bpm) return event;
     if (!lastGood?.bpm) return event;
@@ -437,6 +469,7 @@ export default function App() {
   }
 
   async function appendDebugLog(code: string, data?: unknown) {
+    // Bộ đệm log mới nhất ở đầu; xuất log khi chụp màn hình dùng ref trong bộ nhớ.
     const entry: DebugEntry = { at: new Date().toISOString(), code, data };
     const next = [entry, ...debugLogsRef.current.slice(0, 199)];
     setDebugLogs(next);
@@ -445,10 +478,12 @@ export default function App() {
   }
 
   function showDebugError(code: string, data?: unknown) {
+    // Lỗi không hiển thị trên UI nhưng vẫn có trong file TXT khi chụp màn hình.
     void appendDebugLog(code, data);
   }
 
   async function shareDebugLog() {
+    // Khi có event chụp màn hình, ghi log hiện tại ra TXT rồi mở share sheet native.
     const content = debugLogsRef.current.map((entry) => `${entry.at} ${entry.code}\n${safeJson(entry.data)}`).join('\n\n');
     const uri = `${FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? ''}donhiptim-debug-log.txt`;
     await FileSystem.writeAsStringAsync(uri, content || 'No logs');
@@ -460,6 +495,7 @@ export default function App() {
   }
 
   async function saveNote() {
+    // Ghi chú kết quả là tùy chọn; ghi chú rỗng lưu undefined để record gọn.
     if (!pendingNoteId) return;
     const cleanNote = noteText.trim();
     const next = measurementsRef.current.map((item) =>
@@ -475,6 +511,7 @@ export default function App() {
   }
 
   async function finishResult() {
+    // Tiếp tục sẽ lưu ngữ cảnh/ghi chú, xóa UI đo tạm, rồi mở lịch sử.
     await saveNote();
     setUpdate(initialUpdate);
     setFinalBpm(undefined);
@@ -485,6 +522,7 @@ export default function App() {
   }
 
   async function measureAgainFromResult() {
+    // Đo lại lưu ghi chú trước, sau đó khởi động đo mới ngay.
     await saveNote();
     setPendingResult(undefined);
     setRoute('main');
@@ -497,6 +535,7 @@ export default function App() {
   }
 
   function closeResult() {
+    // Back khỏi kết quả bỏ text ghi chú chưa lưu nhưng vẫn giữ bản đo trong lịch sử.
     setNoteText('');
     setPendingNoteId(undefined);
     setPendingResult(undefined);
@@ -506,11 +545,13 @@ export default function App() {
   }
 
   function openDetail(item: Measurement) {
+    // Màn chi tiết dùng lại bản đo đã chọn.
     setSelected(item);
     setRoute('detail');
   }
 
   function goTab(tab: TabKey) {
+    // Bấm tab dưới luôn đóng màn route phụ.
     setActiveTab(tab);
     setRoute('main');
   }
@@ -1496,24 +1537,29 @@ const dictionary = {
 } as const;
 
 function tx(language: Language, key: keyof typeof dictionary.vi) {
+  // Tra cứu đa ngôn ngữ nhẹ, luôn fallback về tiếng Việt.
   return dictionary[language][key] ?? dictionary.vi[key];
 }
 
 function metricNameFor(metric: MetricKey, language: Language) {
+  // Key của metric cũng chính là key trong từ điển ngôn ngữ.
   return tx(language, metric);
 }
 
 function metricDescriptionFor(metric: MetricKey, language: Language) {
+  // Key mô tả dùng quy ước `<metric>Desc`.
   return tx(language, `${metric}Desc` as keyof typeof dictionary.vi);
 }
 
 function stressLabel(value: string | undefined, language: Language) {
+  // Giá trị stress cũ lưu tiếng Việt để tương thích ngược, khi hiển thị sẽ dịch theo ngôn ngữ.
   if (value === 'Cao') return tx(language, 'high');
   if (value === 'Trung bình') return tx(language, 'medium');
   return tx(language, 'low');
 }
 
 function makeDemo(id: string, metric: MetricKey, value: number, unit: string, bpm: number, hoursAgo: number): Measurement {
+  // Dữ liệu mẫu giúp màn trống có nội dung xem thử nhưng không tính vào realCount.
   const definition = healthMetrics.find((item) => item.key === metric) ?? healthMetrics[0];
   const derived = deriveHealthValues(bpm, 0.95, metric === 'spo2' ? value : undefined, metric === 'respiration' ? value : undefined);
   return {
@@ -1531,6 +1577,7 @@ function makeDemo(id: string, metric: MetricKey, value: number, unit: string, bp
 }
 
 function migrateMeasurement(item: Partial<Measurement> & { bpm: number; id?: string; createdAt?: string }): Measurement {
+  // Record cũ có thể thiếu field mới; migrate để chuẩn hóa khi load.
   const metric = item.metric ?? 'heartRate';
   const definition = healthMetrics.find((metricItem) => metricItem.key === metric) ?? healthMetrics[0];
   const derived = deriveHealthValues(item.bpm, item.quality ?? 0.9, item.spO2, item.respiration);
@@ -1552,6 +1599,7 @@ function migrateMeasurement(item: Partial<Measurement> & { bpm: number; id?: str
 }
 
 function deriveHealthValues(bpm: number, quality: number, measuredSpO2?: number, measuredRespiration?: number) {
+  // Chỉ số wellness ưu tiên giá trị native nếu có, nếu không sẽ ước tính từ BPM/quality.
   const qualityBonus = Math.round(Math.max(0, Math.min(quality, 1)) * 2);
   const spO2 = measuredSpO2 ?? Math.max(94, Math.min(99, 99 - Math.max(0, Math.round((bpm - 92) / 18)) - (quality < 0.65 ? 1 : 0)));
   const respiration = measuredRespiration ?? Math.max(12, Math.min(22, Math.round(12 + bpm / 18)));
@@ -1561,6 +1609,7 @@ function deriveHealthValues(bpm: number, quality: number, measuredSpO2?: number,
 }
 
 function valueForMetric(metric: MetricKey, bpm: number, derived: ReturnType<typeof deriveHealthValues>) {
+  // Mỗi metric quyết định số nào sẽ được lưu và hiển thị ở lịch sử/kết quả.
   if (metric === 'spo2') return derived.spO2 ?? 0;
   if (metric === 'respiration') return derived.respiration ?? 0;
   if (metric === 'hrv') return derived.hrv;
@@ -1569,22 +1618,26 @@ function valueForMetric(metric: MetricKey, bpm: number, derived: ReturnType<type
 }
 
 function displayValueForMetricFromBpm(metric: MetricKey, bpm: number, quality: number) {
+  // Số realtime hiển thị giống giá trị sẽ lưu cho metric đang chọn.
   const derived = deriveHealthValues(bpm, quality);
   const value = valueForMetric(metric, bpm, derived);
   return typeof value === 'number' ? value : bpm;
 }
 
 function displayUnitForMetric(metric: MetricKey, language: Language = 'vi') {
+  // Stress là dạng phân loại nên dùng nhãn "mức" thay vì đơn vị số.
   if (metric === 'stress') return tx(language, 'levelUpper');
   return healthMetrics.find((item) => item.key === metric)?.unit ?? 'BPM';
 }
 
 function formatMetricValue(item: Measurement, language: Language = 'vi') {
+  // Kết quả/lịch sử ẩn điểm stress dạng số và hiển thị phân loại đã dịch.
   if (item.metric === 'stress') return stressLabel(item.stress, language);
   return `${item.value}${item.unit ? ` ${item.unit}` : ''}`;
 }
 
 function statusForMeasurement(item: Measurement, language: Language = 'vi') {
+  // Ngưỡng trạng thái chỉ là tham khảo wellness, không dùng để chẩn đoán y tế.
   if (item.metric === 'spo2') return item.value >= 95 ? tx(language, 'normal') : tx(language, 'low');
   if (item.metric === 'respiration') return item.value >= 12 && item.value <= 20 ? tx(language, 'normal') : tx(language, 'watch');
   if (item.metric === 'hrv') return item.value >= 50 ? tx(language, 'good') : item.value >= 35 ? tx(language, 'medium') : tx(language, 'low');
@@ -1593,19 +1646,23 @@ function statusForMeasurement(item: Measurement, language: Language = 'vi') {
 }
 
 function metricIsHigh(item: Measurement) {
+  // Dòng lịch sử tô nổi các giá trị cần theo dõi.
   return ['Cao', 'Cần theo dõi'].includes(statusForMeasurement(item));
 }
 
 function normalize(value: number, minValue: number, maxValue: number) {
+  // Đưa giá trị biểu đồ về khoảng 0..1.
   return (value - minValue) / Math.max(maxValue - minValue, 1);
 }
 
 function previousText(latest?: Measurement) {
+  // Giữ lại cho nhãn kết quả trước dạng đơn giản/cũ.
   if (!latest) return 'Kết quả trước: Chưa có';
   return `Kết quả trước: ${latest.bpm} BPM (${formatDate(latest.createdAt)})`;
 }
 
 function statusByBpm(bpm?: number, language: Language = 'vi') {
+  // Nhóm hiển thị nhịp tim nghỉ phổ biến ở người lớn.
   if (!bpm) return tx(language, 'waitingSignal');
   if (bpm < 60) return tx(language, 'low');
   if (bpm > 100) return tx(language, 'high');
@@ -1613,6 +1670,7 @@ function statusByBpm(bpm?: number, language: Language = 'vi') {
 }
 
 function formatDate(value: string) {
+  // Dùng định dạng ngày giờ tiếng Việt cho timestamp bản đo.
   return new Intl.DateTimeFormat('vi-VN', {
     hour: '2-digit',
     minute: '2-digit',
@@ -1631,6 +1689,7 @@ function dateOnly(value: string) {
 }
 
 function groupHistory(items: Measurement[], period: HistoryPeriod, language: Language) {
+  // Nhóm lịch sử theo ngày/tuần/tháng theo segment đang chọn.
   const groups = new Map<string, Measurement[]>();
   items.forEach((item) => {
     const title = period === 'day' ? dayGroupTitle(item.createdAt, language) : period === 'week' ? weekGroupTitle(item.createdAt, language) : monthGroupTitle(item.createdAt, language);
@@ -1640,6 +1699,7 @@ function groupHistory(items: Measurement[], period: HistoryPeriod, language: Lan
 }
 
 function dayGroupTitle(value: string, language: Language) {
+  // Nhãn dễ đọc cho nhóm ngày gần đây.
   const date = new Date(value);
   const today = new Date();
   const yesterday = new Date();
@@ -1650,6 +1710,7 @@ function dayGroupTitle(value: string, language: Language) {
 }
 
 function weekGroupTitle(value: string, language: Language) {
+  // Tuần bắt đầu từ thứ Hai theo cách nhóm lịch sử kiểu Việt Nam.
   const date = new Date(value);
   const start = startOfWeek(date);
   const end = new Date(start);
@@ -1662,6 +1723,7 @@ function monthGroupTitle(value: string, language: Language) {
 }
 
 function startOfWeek(date: Date) {
+  // Đưa ngày bất kỳ về thứ Hai lúc 00:00.
   const start = new Date(date);
   const day = start.getDay() || 7;
   start.setHours(0, 0, 0, 0);
@@ -1670,15 +1732,18 @@ function startOfWeek(date: Date) {
 }
 
 function sameDate(left: Date, right: Date) {
+  // So sánh ngày theo lịch local, bỏ qua giờ phút giây.
   return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate();
 }
 
 function errorToText(error: unknown) {
+  // Giữ stack trace trong log TXT xuất khi chụp màn hình.
   if (error instanceof Error) return `${error.name}: ${error.message}\n${error.stack ?? ''}`;
   return safeJson(error);
 }
 
 function safeJson(value: unknown) {
+  // Tránh việc ghi log tự crash khi payload vòng lặp hoặc không serialize được.
   try {
     if (typeof value === 'string') return value;
     return JSON.stringify(value, null, 2);

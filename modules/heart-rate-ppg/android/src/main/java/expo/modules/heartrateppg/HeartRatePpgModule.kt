@@ -28,6 +28,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 class HeartRatePpgModule : Module() {
+  // Các biến camera2 dùng để mở camera sau, nhận frame YUV và điều khiển flash.
   private var cameraDevice: CameraDevice? = null
   private var captureSession: CameraCaptureSession? = null
   private var previewRequestBuilder: CaptureRequest.Builder? = null
@@ -39,6 +40,7 @@ class HeartRatePpgModule : Module() {
   private val running = AtomicBoolean(false)
   private data class ColorSample(val time: Double, val red: Double, val green: Double, val blue: Double)
   private val samples = mutableListOf<ColorSample>()
+  // Các biến này theo dõi đặt tay để tránh mất kết quả khi tín hiệu rung nhẹ.
   private var lastEmit = 0L
   private var missingFingerFrames = 0
   private var hasSeenFinger = false
@@ -47,6 +49,7 @@ class HeartRatePpgModule : Module() {
   private val toneGenerator by lazy { ToneGenerator(AudioManager.STREAM_MUSIC, 65) }
 
   override fun definition() = ModuleDefinition {
+    // Bridge Expo: JS gọi hàm đo/tít và nhận event PPG từ native Android.
     Name("HeartRatePpg")
 
     Events("onPpgUpdate")
@@ -71,6 +74,7 @@ class HeartRatePpgModule : Module() {
   private fun context(): Context? = appContext.reactContext
 
   private fun start(durationMs: Long) {
+    // Kiểm tra quyền, tìm camera có flash, reset buffer rồi mở camera.
     val context = context() ?: return
     if (running.get()) return
     if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -114,6 +118,7 @@ class HeartRatePpgModule : Module() {
           override fun onConfigured(session: CameraCaptureSession) {
             captureSession = session
             val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+              // Bật torch trong request preview để soi xuyên đầu ngón tay.
               addTarget(target)
               set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -122,6 +127,7 @@ class HeartRatePpgModule : Module() {
                 set(CaptureRequest.FLASH_STRENGTH_LEVEL, min(2, maxFlashLevel))
               }
               set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+              // Ban đầu để AE/AWB tự ổn định, sau đó khóa lại khi tín hiệu đủ tốt.
               set(CaptureRequest.CONTROL_AE_LOCK, false)
               set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
               set(CaptureRequest.CONTROL_AWB_LOCK, false)
@@ -149,6 +155,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun stop(status: String, message: String?) {
+    // Dừng camera, giải phóng resource và gửi trạng thái cuối về JS.
     if (!running.getAndSet(false) && status != "failed") return
     cameraHandler?.post {
       try {
@@ -169,6 +176,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun onFrame(image: Image) {
+    // Luồng mỗi frame: lấy màu ROI -> phát hiện ngón tay -> lưu mẫu -> ước tính BPM.
     if (!running.get()) return
     val elapsed = elapsedMs()
     val color = averageColor(image)
@@ -179,6 +187,7 @@ class HeartRatePpgModule : Module() {
       samples.subList(0, samples.size - 1800).clear()
     }
     val detection = fingerDetectionScore(color, motion)
+    // Confidence dùng màu, độ sáng, dao động mạch và chuyển động thay vì ngưỡng cố định.
     val fingerDetected = detection.confidence >= 85.0
     if (detection.confidence >= 65.0) {
       hasSeenFinger = true
@@ -186,6 +195,7 @@ class HeartRatePpgModule : Module() {
     stableFingerFrames = if (fingerDetected) stableFingerFrames + 1 else max(0, stableFingerFrames - 2)
     missingFingerFrames = if (detection.confidence >= 55.0) 0 else missingFingerFrames + 1
     if (stableFingerFrames >= 15) {
+      // Khóa AE/AWB khi ngón tay ổn định để tín hiệu PPG không bị camera tự chỉnh trôi.
       lockCameraControlsIfNeeded()
     }
     val signalUsable = detection.confidence >= 72.0 || (hasSeenFinger && missingFingerFrames < 180)
@@ -215,6 +225,7 @@ class HeartRatePpgModule : Module() {
     }
 
     if (elapsed >= durationMs || (elapsed >= 30_000 && qualityScore() >= 0.82)) {
+      // Khi đủ thời gian hoặc chất lượng đủ cao, tính kết quả cuối rồi đóng camera.
       val result = estimateBpm()
       if (result.first != null && result.second >= 0.38) {
         val spo2 = estimateSpO2()
@@ -270,6 +281,7 @@ class HeartRatePpgModule : Module() {
   private data class FingerDetection(val confidence: Double, val message: String)
 
   private fun averageColor(image: Image): AverageColor {
+    // Chỉ phân tích ROI trung tâm để giảm nhiễu do viền ảnh hoặc che lệch ngón tay.
     val width = image.width
     val height = image.height
     val yPlane = image.planes[0]
@@ -322,6 +334,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun fingerDetectionScore(stats: AverageColor, motion: Double): FingerDetection {
+    // Tính điểm tin cậy đặt tay từ redness, saturation, brightness, pulse và motion.
     if (stats.brightness > 235) return FingerDetection(18.0, "Che kín camera và flash.")
     if (stats.brightness < 18) return FingerDetection(12.0, "Bật flash hoặc đặt ngón tay sát hơn.")
 
@@ -353,6 +366,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun lockCameraControlsIfNeeded() {
+    // Sau khi ổn định, khóa phơi sáng/cân bằng trắng để tín hiệu màu không drift.
     if (cameraControlsLocked) return
     val session = captureSession ?: return
     val builder = previewRequestBuilder ?: return
@@ -367,6 +381,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun qualityScore(): Double {
+    // Chất lượng tổng hợp từ độ sáng và biên độ dao động tín hiệu đỏ gần đây.
     if ((!isFingerDetected() && !(hasSeenFinger && missingFingerFrames < 90)) || samples.size < 120) return 0.0
     val values = samples.takeLast(240).map { it.red }
     val mean = values.average()
@@ -377,6 +392,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun estimateBpm(): Pair<Int?, Double> {
+    // BPM cuối dùng cửa sổ dài hơn realtime để giảm nhiễu.
     if (!isFingerDetected() && !(hasSeenFinger && missingFingerFrames < 45)) return Pair(null, 0.0)
     val result = bpmFromRecentSamples(24.0, true)
     val bpm = result.first ?: return Pair(null, qualityScore() * 0.55)
@@ -384,6 +400,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun estimateSpO2(): Pair<Int?, Double> {
+    // SpO2 là ước tính wellness từ tỷ lệ AC/DC kênh màu, không phải kết quả y tế.
     if (!isFingerDetected() && !(hasSeenFinger && missingFingerFrames < 45)) return Pair(null, 0.0)
     val lastTime = samples.lastOrNull()?.time ?: return Pair(null, 0.0)
     val usable = samples.filter { it.time >= max(0.0, lastTime - 24.0) }
@@ -418,6 +435,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun estimateRespiration(): Pair<Int?, Double> {
+    // Nhịp thở lấy từ dao động chậm trong tín hiệu PPG.
     if (!isFingerDetected() && !(hasSeenFinger && missingFingerFrames < 45)) return Pair(null, 0.0)
     val lastTime = samples.lastOrNull()?.time ?: return Pair(null, 0.0)
     val usable = samples.filter { it.time >= max(0.0, lastTime - 30.0) }
@@ -439,6 +457,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun respirationFromValues(values: List<Double>, sampleRate: Double): Pair<Int?, Double>? {
+    // Kết hợp phổ tần và tự tương quan để tránh nhận nhầm nhiễu thành nhịp thở.
     val signal = respiratorySignal(values, sampleRate)
     if (signal.size <= 300 || standardDeviation(signal) <= 0.00004) return null
 
@@ -468,6 +487,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun respiratorySignal(values: List<Double>, sampleRate: Double): List<Double> {
+    // Lọc bỏ baseline nhanh, giữ thành phần dao động thở chậm.
     val mean = values.average()
     if (mean <= 1) return emptyList()
     val normalized = values.map { (it - mean) / mean }
@@ -477,6 +497,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun respiratoryAutocorrelation(signal: List<Double>, sampleRate: Double): Pair<Int?, Double>? {
+    // Tìm chu kỳ lặp trong dải 6-30 nhịp thở/phút.
     val minLag = max(1, (sampleRate * 60 / 30).roundToInt())
     val maxLag = min(signal.size - 2, (sampleRate * 60 / 6).roundToInt())
     if (maxLag <= minLag) return null
@@ -496,6 +517,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun liveBpmEstimate(): Pair<Int?, Double> {
+    // BPM realtime dùng cửa sổ ngắn để UI cập nhật nhanh.
     if (!isFingerDetected() && !(hasSeenFinger && missingFingerFrames < 180)) return Pair(null, 0.0)
     val result = bpmFromRecentSamples(10.0, false)
     val bpm = result.first ?: return Pair(null, qualityScore())
@@ -503,6 +525,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun bpmFromRecentSamples(seconds: Double, final: Boolean): Pair<Int?, Double> {
+    // Lấy mẫu gần nhất và thử nhiều kênh màu để chọn kênh ổn định nhất.
     val lastTime = samples.lastOrNull()?.time ?: return Pair(null, 0.0)
     val usable = samples.filter { it.time >= max(0.0, lastTime - seconds) }
     if (usable.size <= if (final) 210 else 90) return Pair(null, 0.0)
@@ -520,6 +543,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun fusedBpm(values: List<Double>, sampleRate: Double, final: Boolean): Pair<Int?, Double>? {
+    // Hợp nhất FFT, peak detection và autocorrelation; chỉ nhận khi các phương pháp đồng thuận.
     if (values.size <= (if (final) 210 else 90) || sampleRate <= 5) return null
     val signal = preprocessedSignal(values, sampleRate)
     if (standardDeviation(signal) <= 0.00008) return null
@@ -548,6 +572,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun preprocessedSignal(values: List<Double>, sampleRate: Double): List<Double> {
+    // Làm mượt, khử baseline, chuẩn hóa và áp cửa sổ Hamming trước khi tính BPM.
     val mean = values.average()
     if (mean <= 1) return emptyList()
     val normalized = values.map { (it - mean) / mean }
@@ -568,6 +593,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun spectralBpm(signal: List<Double>, sampleRate: Double, final: Boolean): Pair<Int?, Double>? {
+    // Quét công suất phổ trong dải BPM hợp lệ để tìm nhịp trội.
     if (signal.size <= (if (final) 210 else 90) || sampleRate <= 5 || standardDeviation(signal) <= 0.00008) return null
 
     val powers = mutableMapOf<Int, Double>()
@@ -606,6 +632,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun peakBpm(signal: List<Double>, sampleRate: Double, final: Boolean): Pair<Int?, Double>? {
+    // Tìm các đỉnh mạch và đổi khoảng cách đỉnh sang BPM.
     if (signal.size <= (if (final) 210 else 90) || sampleRate <= 5) return null
     val std = standardDeviation(signal)
     if (std <= 0.00008) return null
@@ -635,6 +662,7 @@ class HeartRatePpgModule : Module() {
   }
 
   private fun autocorrelationBpm(signal: List<Double>, sampleRate: Double, final: Boolean): Pair<Int?, Double>? {
+    // Tìm chu kỳ lặp mạnh nhất bằng autocorrelation trong dải nhịp tim hợp lệ.
     if (signal.size <= (if (final) 210 else 90) || sampleRate <= 5) return null
     val minLag = max(1, (sampleRate * 60 / 150).roundToInt())
     val maxLag = min(signal.size - 2, (sampleRate * 60 / 48).roundToInt())
